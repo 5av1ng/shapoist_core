@@ -1,0 +1,22 @@
+[package]
+name = "shapoist_core"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+env_logger = "0.10.0"
+log = "0.4"
+serde = { version = "1.0.190", features = ["derive"] }
+toml = { version = "0.7.8", features = ["parse", "display"] }
+kira = "0.8.4"
+rand = "0.8.5"
+utf8_slice = "1.0.0"
+chrono = "0.4.31"
+image = "0.24.7"
+shapoist_request = { path = "../shapoist_request", features = ["client"] }
+nablo_shape = { path = "../nablo_shape" }
+zip = { version = "0.6.6", default-features = false }
+thiserror = "1.0.50"
+nablo_data = { path = "../nablo_data" }
