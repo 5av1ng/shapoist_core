@@ -1,6 +1,6 @@
 use std::path::Path;
 use crate::system::Error;
-use std::io::{Write, BufRead, Read, BufReader};
+use std::io::{Write, BufRead, Read};
 use std::{io, fs};
 use log::*;
 
@@ -35,9 +35,16 @@ pub(crate) fn create_file<P: AsRef<Path>>(path: P) -> Result<(), Error>{
 }
 
 #[allow(dead_code)]
-pub(crate) fn write_file<P: AsRef<Path>>(path: P, input: impl Read) -> Result<(), Error>{
+pub(crate) fn write_file<P: AsRef<Path>>(path: P, mut input: impl Read) -> Result<(), Error>{
 	debug!("writing file {}", path.as_ref().display());
-	let f = BufReader::new(input);
+	// if i set append to false, i will get os error 87, but i dont know why
+	remove_file(&path)?;
+	create_file(&path)?;
+	let mut buffer = vec!();
+	if let Err(e) = input.read_to_end(&mut buffer) {
+		error!("opening file failed, info: {}", e);
+		return Err(e.into())
+	};
 	let mut file = match fs::OpenOptions::new().append(true).open(&path) {
 		Ok(t) => t,
 		Err(e) => {
@@ -45,7 +52,7 @@ pub(crate) fn write_file<P: AsRef<Path>>(path: P, input: impl Read) -> Result<()
 			return Err(e.into());
 		}
 	};
-	match file.write_all(f.buffer()){
+	match file.write_all(buffer.as_slice()){
 		Ok(_) => {
 			debug!("file {} have written", path.as_ref().display());
 			info!("file {} written", path.as_ref().display());

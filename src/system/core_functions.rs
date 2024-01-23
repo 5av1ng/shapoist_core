@@ -61,6 +61,7 @@ impl ShapoistCore {
 		}
 
 		Ok(Self {
+			assets_path: assets_path.into(),
 			log_path,
 			settings,
 			chart_list,
@@ -69,10 +70,63 @@ impl ShapoistCore {
 		})
 	}
 
+	/// if settings have changed you should call this
+	pub fn settings_are_changed(&mut self) -> Result<(), Error> {
+		let settings_path = format!("{}/shapoist_assets/settings.toml", self.assets_path.display());
+		write_file(settings_path, to_toml(&self.settings)?.as_bytes())?;
+		Ok(())
+	}
+
+	/// reload all resource
+	pub fn reload_all(&mut self) -> Result<(), Error> {
+		let assets_path = format!("{}/", self.assets_path.display());
+		let settings = Settings::process_setting_file(&assets_path)?;
+		let mut chart_list = process_chart_path(&assets_path)?;
+		let mut script_list = process_script_path(&assets_path)?;
+
+		if settings.need_check_chart {
+			for chart in &mut chart_list {
+				let _ = chart.check();
+			}
+		}
+
+		if settings.need_check_script {
+			for script in &mut script_list {
+				let _ = script.check();
+			}
+		}
+
+		self.settings = settings;
+		self.chart_list = chart_list;
+		self.script_list = script_list;
+		Ok(())
+	}
+
+	/// read a chart file
+	pub fn read_chart(&mut self, info: &mut ChartInfo) -> Result<(), Error> {
+		info.check()?;
+		let chart = match read_file_to_string(format!("{}/chart.sc", info.path.display())) {
+			Ok(t) => t,
+			Err(_) => {
+				return Err(ChartError::UnsupportedEncoding.into())
+			}
+		};
+		match parse_toml::<Chart>(&chart) {
+			Ok(inner) => {
+				self.current_chart = Some((inner, info.clone()));
+				Ok(())
+			},
+			Err(_) => {
+				return Err(ChartError::CantParseChart.into())
+			}
+		}
+	} 
+
 	#[cfg(target_arch="wasm32")]
 	pub fn new(_: &str) -> Result<Self, Error> {
 		debug!("creating new ShapoistCore struct..");
 		info!("running in web mode, using minimal setup.");
+		// web user should be able to get their setting by login.
 
 		Ok(Self::default())
 	}
@@ -169,7 +223,7 @@ impl Settings {
 	pub fn process_setting_file(assets_path: &str) -> Result<Self, Error> {
 		info!("processing settings file");
 		let settings_path = format!("{}/shapoist_assets/settings.toml", assets_path);
-		let settings = parse_toml(&match read_file_to_string(settings_path.clone()){
+		let settings = parse_toml(&match read_file_to_string(settings_path.clone()) {
 			Ok(t) => t,
 			Err(IoError(t)) => {
 				if let std::io::ErrorKind::NotFound = t.kind() {
@@ -209,13 +263,13 @@ impl ChartInfo {
 		self.condition = Condition::Broken;
 		let is_file_missing = !(PathBuf::from(format!("{}/song.mp3",self.path.display())).exists() &&
 			PathBuf::from(format!("{}/back.png",self.path.display())).exists() &&
-			PathBuf::from(format!("{}/chart.scf",self.path.display())).exists() &&
+			PathBuf::from(format!("{}/chart.sc",self.path.display())).exists() &&
 			PathBuf::from(format!("{}/config.toml",self.path.display())).exists());
 		if is_file_missing {
 			return Err(ChartError::FileMissing.into());
 		}
 
-		let chart = match read_file_to_string(format!("{}/chart.scf", self.path.display())) {
+		let chart = match read_file_to_string(format!("{}/chart.sc", self.path.display())) {
 			Ok(t) => t,
 			Err(_) => {
 				return Err(ChartError::UnsupportedEncoding.into())
@@ -295,9 +349,7 @@ fn process_chart_path(assets_path: &str) -> Result<Vec<ChartInfo>, Error> {
 	for chart in read_every_file(chart_path.clone())? {
 		let metadata = read_metadata(chart.clone())?;
 		if metadata.is_dir() {
-			for detailed_chart in read_every_file(chart.clone())? {
-				charts.push(ChartInfo::process(&detailed_chart)?);
-			}
+			charts.push(ChartInfo::process(&chart)?);
 		}
 		if metadata.is_file() {
 			let supported_extension = vec!(OsStr::new("scc"));
@@ -371,6 +423,7 @@ fn unzip(path: &str, uzip_path: &str) -> Result<(), Error> {
 impl Default for ShapoistCore {
 	fn default() -> Self {
 		Self {
+			assets_path: PathBuf::from("./"),
 			log_path: PathBuf::new(),
 			chart_list: Vec::new(),
 			current_chart: None,

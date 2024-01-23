@@ -1,9 +1,0 @@
-search_depth = 10
-need_check_chart = true
-need_check_script = true
-
-[enabled_script]
-
-[log_remain]
-secs = 43200
-nanos = 0

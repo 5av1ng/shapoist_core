@@ -17,24 +17,24 @@ pub enum Error {
 	#[error("Unknown Error")]
 	#[default] Unknown,
 	/// errors when using [`timer::Timer`]
-	#[error("Timer Error")]
+	#[error("Timer Error, info: {0}")]
 	TimerError(#[from] TimerError),
 	/// errors when doing io functions
-	#[error("I/O Error")]
+	#[error("I/O Error, info: {0}")]
 	IoError(#[from] std::io::Error),
 	/// errors when converting into toml
-	#[error("Serdelize Error")]
+	#[error("Serdelize Error, info: {0}")]
 	ConvertToError(#[from] toml::ser::Error),
 	/// errors when converting back form toml
-	#[error("Deserdelize Error")]
+	#[error("Deserdelize Error, info: {0}")]
 	ConvertInError(#[from] toml::de::Error),
 	/// possible reasons of why a chart is not usable.
-	#[error("Chart Parsing Error")]
+	#[error("Chart Parsing Error, info: {0}")]
 	ChartError(#[from] ChartError),
 	/// possible reasons during using zip
-	#[error("Zip Error")]
+	#[error("Zip Error, info: {0}")]
 	ZipError(#[from] zip::result::ZipError),
-	#[error("Command Error")]
+	#[error("Command Error, info: {0}")]
 	CommannError(#[from] CommandError),
 }
 

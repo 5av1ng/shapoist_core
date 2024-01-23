@@ -22,6 +22,8 @@ use std::collections::HashMap;
 ///
 /// Normally you would like to start with [`ShapoistCore::new()`], and you should call [`ShapoistCore::frame()`] every time your app updates
 pub struct ShapoistCore {
+	/// where is the assets floor?
+	pub assets_path: PathBuf,
 	/// where should we write out log?
 	pub log_path: PathBuf,
 	/// readed charts
@@ -72,6 +74,7 @@ pub struct ChartInfo {
 	pub artist: String,
 	pub version: Version,
 	pub path: PathBuf,
+	pub image_size: (usize, usize),
 	/// different from used_script
 	pub needed_scrpt: Vec<ScriptChart>,
 	pub used_script: Vec<ScriptChart>,
