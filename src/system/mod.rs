@@ -36,6 +36,10 @@ pub enum Error {
 	ZipError(#[from] zip::result::ZipError),
 	#[error("Command Error, info: {0}")]
 	CommannError(#[from] CommandError),
+	#[error("Play Error, info: {0}")]
+	PlayError(#[from] PlayError),
+	#[error("Chart Edit Error, info: {0}")]
+	ChartEditError(#[from] ChartEditError),
 }
 
 #[non_exhaustive]
@@ -50,4 +54,32 @@ pub enum ChartError {
 	CantParseChart,
 	#[error("Cant read music source")]
 	MusicSourceCantRead(#[from] kira::sound::FromFileError)
+}
+
+#[non_exhaustive]
+/// possible reasons that will appear when playing chart or pause chart
+#[derive(thiserror::Error, Debug)]
+pub enum PlayError {
+	#[error("no chart loaded")]
+	NoChartLoaded,
+	#[error("haven't start play")]
+	HaventStart,
+	#[error("manager create failed, info: {0}")]
+	ManagerCreateFail(#[from] kira::manager::backend::cpal::Error),
+	#[error("clock create failed, info: {0}")]
+	ClockCreateFailed(#[from] kira::manager::error::AddClockError),
+	#[error("music play failed, info: {0}")]
+	MusicPlayFailed(#[from] kira::manager::error::PlaySoundError<()>),
+	#[error("error during using kira, info: {0}")]
+	KiraError(#[from] kira::CommandError),
+}
+
+#[non_exhaustive]
+/// possible reasons that will appear when creating a chart
+#[derive(thiserror::Error, Debug)]
+pub enum ChartEditError {
+	#[error("missing info")]
+	MissingInfo,
+	#[error("not in edit mode")]
+	NotInEditMode
 }

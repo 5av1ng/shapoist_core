@@ -2,21 +2,28 @@
 //!
 //! Normally you will start from [`ShapoistCore`]
 
+use serde::Deserializer;
+use serde::Deserialize;
+use serde::Serializer;
+use nablo_shape::prelude::shape_elements::Rect;
+use nablo_shape::prelude::*;
+use nablo_data::CanBeAnimated;
+use time::Duration;
 use shapoist_request::prelude::*;
 use std::thread::JoinHandle;
 use crate::system::command::Command;
 use kira::manager::AudioManager;
 use crate::system::timer::Timer;
-use nablo_shape::shape::animation::StyleToAnimate;
 use nablo_shape::math::Area;
 use nablo_shape::shape::animation::Animation;
-use nablo_shape::shape::Shape;
+use nablo_shape::shape::Shape as NabloShape;
 use std::collections::HashSet;
 use std::fmt;
 use nablo_shape::math::Vec2;
 use std::ops::Range;
 use std::path::PathBuf;
 use std::collections::HashMap;
+use nablo_shape::prelude::shape_elements::Style as NabloStyle;
 
 /// The core part of shapoist.
 ///
@@ -82,8 +89,65 @@ pub struct ChartInfo {
 	/// None for local chart
 	pub publish_info: Option<Publish>,
 	pub condition: Condition,
+	/// how does this chart len?
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub sustain_time: Duration,
 	/// the first [`String`] stands for script name
 	pub chart_varibles: HashMap<String, Vec<Varible>>,
+	pub history: Option<ChartHistory>,
+	/// offcet time
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub offcet: Duration,
+}
+
+fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error> 
+	where S: Serializer 
+{
+	let mut serde_state = serde::Serializer::serialize_struct(serializer, "Duration", 1)?;
+	serde::ser::SerializeStruct::serialize_field(&mut serde_state, "time", &duration.as_seconds_f32())?;
+	serde::ser::SerializeStruct::end(serde_state)
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+#[serde(default)]
+struct DeDuration {
+	time: f32,
+}
+
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error> 
+	where D: Deserializer<'de>
+{
+	let de = DeDuration::deserialize(deserializer)?;
+	Ok(Duration::seconds_f32(de.time))
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+/// the basic render unit
+pub struct Shape {
+	pub animation: HashMap<String, Animation>,
+	pub shape: NabloShape,
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub start_time: Duration,
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub sustain_time: Duration,
+}
+
+impl CanBeAnimated<'_, NabloShape> for Shape {
+	fn get_animation_map(&mut self) -> &mut HashMap<String, Animation> { &mut self.animation }
+	fn get_animate_target(&mut self) -> &mut NabloShape { &mut self.shape }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+/// saves play info
+pub struct ChartHistory {
+	pub high_score: usize,
+	pub high_accurcy: f32,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
@@ -94,26 +158,37 @@ pub struct ChartInfo {
 /// self.len() != linker.len + 1
 pub struct Bpm {
 	/// the bpm label
-	pub bpm: Vec<f32>,
+	pub start_bpm: f32,
 	/// contains when and how to change bpm, time save as nano sec.
-	pub linker: Vec<(i64, BpmLinker)>,
+	pub linkers: Vec<BpmLinker>,
 }
 
 impl Default for Bpm {
 	fn default() -> Self {
 		Self {
-			bpm: vec!(150.0),
-			linker: vec!()
+			start_bpm: 150.0,
+			linkers: vec!()
 		}
 	}
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
 /// define how to link bpms
-pub enum BpmLinker {
+pub enum BpmLinkerType {
 	Bezier(Vec2, Vec2),
-	#[default] Line,
+	Linear,
+	#[default] Mutation,
 	Power(f32)
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+/// define how to link bpms
+pub struct BpmLinker {
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub time: Duration,
+	pub linker: BpmLinkerType,
+	pub bpm: f32
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
@@ -174,25 +249,66 @@ pub struct Chart {
 	/// saves notes, [`String`] stands id of the note.
 	pub notes: HashMap<String, Note>,
 	/// saves judge fields, [`String`] stands id of the field.
-	pub judge_field: HashMap<String,JudgeField>,
+	pub judge_fields: HashMap<String, JudgeField>,
 	/// saves shapes, [`String`] stands id of the shape.
-	pub shape: HashMap<String, Shape>,
+	pub shapes: HashMap<String, Shape>,
+	/// saves script objects, [`String`] stands id of the objects. TODO
+	pub script_objects: HashMap<String, ()>,
 	/// click effects, [`String`] stands id of the effect.
-	pub click_effect: HashMap<String, ClickEffect>,
+	pub click_effects: HashMap<String, ClickEffect>,
 	/// groups, when any elements inside a group is selected, a whole group will be selected
 	pub group: Vec<HashSet<Select>>,
 	/// how large will the chart take.
-	pub size: Vec2
+	pub size: Vec2,
 }
 
 impl Default for Chart {
 	fn default() -> Self {
 		Self {
-			notes: HashMap::new(),
-			judge_field: HashMap::new(),
-			shape: HashMap::new(),
-			click_effect: HashMap::new(),
+			notes: HashMap::from([(String::from("default"), Note {
+				judge_type: JudgeType::Slide,
+				judge_time: Duration::seconds(5),
+				judge_field_id: String::from("default"),
+				click_effect_id: String::from("default"),
+				click_effect_position: Vec2::ZERO,
+			})]),
+			judge_fields: HashMap::from([(String::from("default"), JudgeField {
+				inner: JudgeFieldInner {
+					area: Area::new(Vec2::ZERO, Vec2::same(600.0)),
+					..Default::default()
+				},
+				animation: HashMap::new(),
+				start_time: Duration::ZERO,
+				sustain_time: Duration::seconds(10),
+			})]),
+			shapes: HashMap::from([(String::from("default"), Shape {
+				animation: HashMap::from([(String::from("----Shape----style----position----y"), Animation {
+					start_time: Duration::seconds(4),
+					start_value: -100.0,
+					linkers: vec!(Linker {
+						end_value: 500.0,
+						sustain_time: Duration::seconds(1),
+						..Default::default()
+					})
+				})]),
+				shape: NabloShape {
+					shape: ShapeElement::Rect(Rect {
+						width_and_height: Vec2::same(100.0),
+						rounding: Vec2::same(10.0),
+					}),
+					style: NabloStyle {
+						clip: Area::INF,
+						transform_origin: Vec2::same(500.0),
+						..Default::default()
+					}
+				},
+				start_time: Duration::seconds(4),
+				sustain_time: Duration::seconds(6),
+			})]),
+			click_effects: HashMap::new(),
+			script_objects: HashMap::new(),
 			group: vec!(),
+			// sustain_time: Duration::seconds(10),
 			size: Vec2::new(1920.0,1080.0),
 		}
 	}
@@ -204,8 +320,10 @@ impl Default for Chart {
 pub struct Note {
 	/// how to judge this note?
 	pub judge_type: JudgeType,
-	/// when should player click this note? saves as nano sec.
-	pub judge_time: i64, 
+	/// when should player click this note?
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub judge_time: Duration, 
 	/// which judge field is this note link to?
 	pub judge_field_id: String,
 	/// which click effect should we use?
@@ -221,29 +339,84 @@ pub enum JudgeType {
 	Slide,
 	Flick,
 	/// contains how long should the player hold. saves as nano sec.
-	Hold(i64),
+	Hold(Duration),
 	TapAndFlick,
-	/// contains where and after when the player moves to next judge field. saves as nano sec. not available in PC.
-	Chain(Vec<(String, i64)>),
-	/// contains where and after when the player moves to next judge field. saves as nano sec. not available in PC.
-	TapChain(Vec<(String, i64)>),
+	/// contains where and after when the player moves to next judge field. not available in PC. 
+	Chain(Vec<(String, Duration)>),
+	/// contains where and after when the player moves to next judge field. not available in PC.
+	TapChain(Vec<(String, Duration)>),
 	/// contains which angle should player filck to, save as rad.
 	AngledFilck(f32),
+	AngledTapFilck(f32),
+}
+
+/// saves info during judging
+pub struct JudgeInfo {
+	/// saves where we judge
+	pub current_judge: usize,
+	/// what we need keep tracking
+	pub judge_tracks: Vec<JudgeTrack>
+}
+
+/// save which note should we tracing on
+pub struct JudgeTrack {
+	pub note_id: usize,
+	pub linked_click: usize,
+	pub start_time: Duration,
+	pub last_position: Vec2,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
-#[serde(default)]
+// #[serde(default)]
 /// a judge field
 pub struct JudgeField {
+	pub inner: JudgeFieldInner,
+	pub animation: HashMap<String, Animation>,
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub start_time: Duration,
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub sustain_time: Duration,
+}
+
+impl CanBeAnimated<'_, JudgeFieldInner> for JudgeField {
+	fn get_animation_map(&mut self) -> &mut HashMap<String, Animation> { &mut self.animation }
+	fn get_animate_target(&mut self) -> &mut JudgeFieldInner { &mut self.inner }
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(default)]
+/// to use CanBeAnimated trait
+pub struct JudgeFieldInner {
 	pub area: Area,
-	pub animation: HashMap<StyleToAnimate, Animation>
+	pub position: Vec2,
+	pub transform_origin: Vec2,
+	pub scale: Vec2,
+	pub rotate: f32,
+}
+
+impl Default for JudgeFieldInner {
+	fn default() -> Self {
+		Self {
+			area: Area::default(),
+			rotate: f32::default(),
+			position: Vec2::default(),
+			transform_origin: Vec2::default(),
+			scale: Vec2::NOT_TO_SCALE,
+		}
+	}
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 /// a click effect, save as delta value.
 pub struct ClickEffect {
-	effect: Vec<Shape>
+	pub immaculate_effect: Vec<Shape>,
+	pub extra_effect: Vec<Shape>,
+	pub normal_effect: Vec<Shape>,
+	pub fade_effect: Vec<Shape>,
+	pub miss_effect: Vec<Shape>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Eq, Hash)]
@@ -252,7 +425,9 @@ pub enum Select {
 	Note(String),
 	JudgeField(String),
 	Shape(String),
-	ClickEffect(String)	
+	ClickEffect(String),
+	// TODO
+	Script(()),
 }
 
 impl Default for Select {
@@ -266,23 +441,22 @@ impl Default for Select {
 /// contains methods to edit chart
 pub struct ChartEditor {
 	/// changes will fist apply to this
-	pub now_select: Select,
+	pub now_select: Option<Select>,
 	/// changes will fist apply to this after now_select
 	pub multi_select: Vec<Select>,
-	/// for scripts to select element
-	pub label_select: HashMap<String, Vec<Select>>
 }
 
 /// contains detailed information while playing
 pub struct PlayInfo {
 	/// [`Vec<Note>`] is sorted by click_time, note will be kicked out if have judged. auto mode and replay mode this will be empty.
-	pub notes_and_judge_field: HashMap<String, Vec<Note>>,
+	pub notes: HashMap<String, Vec<Note>>,
+	/// saves judge field and where do we judge.
+	pub judge_fields: HashMap<String, (JudgeField, JudgeInfo)>,
+	pub click_effects: HashMap<String, ClickEffect>,
 	/// this is sorted by start_time
-	pub shape: Vec<Shape>,
+	pub shapes: Vec<Shape>,
 	/// shape is rendering, if shape is no longer need to be rendered, it will be kicked out. shape need to be rendered should push into this set
 	pub render_queue: Vec<Shape>,
-	/// where we render?
-	pub current_render: usize,
 	pub score: f32,
 	pub accuracy: f32,
 	pub combo: usize,
@@ -292,7 +466,17 @@ pub struct PlayInfo {
 	/// the replay file.
 	pub replay: Replay,
 	/// where the audio plays
-	pub audio_manager: AudioManager
+	pub judge_vec: Vec<Judge>,
+	pub audio_manager: AudioManager,
+	pub audio_clock: kira::clock::ClockHandle,
+	pub total_notes: usize,
+	pub judged_notes: usize,
+	pub is_finished: bool,
+	pub sustain_time: Duration,
+	pub current_render: usize,
+	pub offcet: Duration,
+	pub is_track_played: bool,
+	pub track_path: PathBuf,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -307,7 +491,6 @@ pub enum PlayMode {
 #[serde(default)]
 /// the replay file.
 pub struct Replay {
-	pub judge_vec: Vec<Judge>,
 	pub score_history: Vec<f32>,
 	pub judge_history_events: Vec<JudgeEvent>
 }
@@ -315,6 +498,7 @@ pub struct Replay {
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
 /// The judgement of a [`Note`]
 pub enum Judge {
+	/// saves (now - click_time) / Duration::milis(50). 
 	Immaculate(f32),
 	Extra,
 	Normal,
@@ -328,7 +512,7 @@ pub enum Judge {
 pub struct JudgeEvent {
 	/// contains both mouse clicks and touch
 	pub clicks: Vec<Click>,
-	pub keypresses: Vec<KeyPress>,
+	// pub keypresses: Vec<KeyPress>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -337,18 +521,26 @@ pub struct JudgeEvent {
 pub struct Click {
 	pub id: usize,
 	pub position: Vec2,
-	pub is_click: bool
+	pub state: ClickState
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
-#[serde(default)]
-/// is key press?
-pub struct KeyPress {
-	pub id: usize,
-	/// numbers contain both numpad and key
-	pub key: Key,
-	pub is_click: bool
+/// click state
+pub enum ClickState {
+	Pressed,
+	Pressing,
+	#[default] Released
 }
+
+// #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
+// #[serde(default)]
+// /// is key press?
+// pub struct KeyPress {
+// 	pub id: usize,
+// 	/// numbers contain both numpad and key
+// 	pub key: Key,
+// 	pub is_click: bool
+// }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
 /// Human readable keyname
@@ -451,6 +643,10 @@ pub struct Settings {
 	pub thread_handels: usize,
 	/// how many commands should we save as history? by default its 30
 	pub command_history: usize,
+	/// offcet
+	#[serde(serialize_with = "serialize_duration")]
+	#[serde(deserialize_with = "deserialize_duration")]
+	pub offcet: Duration,
 }
 
 impl Default for Settings {
@@ -463,6 +659,7 @@ impl Default for Settings {
 			need_check_script: true,
 			thread_handels: 4,
 			command_history: 30,
+			offcet: Duration::ZERO,
 		}
 	}
 }

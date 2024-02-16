@@ -8,7 +8,7 @@ edition = "2021"
 [dependencies]
 env_logger = "0.10.0"
 log = "0.4"
-serde = { version = "1.0.190", features = ["derive"] }
+serde = { version = "1.0.196", features = ["derive"] }
 toml = { version = "0.8.8", features = ["parse", "display"] }
 kira = "0.8.4"
 rand = "0.8.5"
@@ -20,3 +20,4 @@ nablo_shape = { path = "../nablo_shape" }
 zip = { version = "0.6.6", default-features = false }
 thiserror = "1.0.50"
 nablo_data = { path = "../nablo_data" }
+time = { version = "0.3.30", features = [ "std", "wasm-bindgen", "macros", "serde" ]}

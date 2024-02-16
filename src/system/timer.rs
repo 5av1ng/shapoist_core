@@ -1,8 +1,8 @@
 //! a simple timer
 
-use std::time::UNIX_EPOCH;
+use time::OffsetDateTime;
+use time::Duration;
 use crate::system::Error;
-use std::time::SystemTime;
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq, thiserror::Error)]
 pub enum TimerError {
@@ -19,8 +19,8 @@ pub enum TimerError {
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
 #[serde(default)]
 pub struct Timer {
-	last_pause_time: Option<i64>,
-	last_start_time: Option<i64>,
+	last_pause_time: Option<OffsetDateTime>,
+	last_start_time: Option<OffsetDateTime>,
 	if_paused:bool,
 }
 
@@ -38,14 +38,14 @@ impl Timer {
 	/// start the timer, returns error if the timer has started
 	pub fn start(&mut self) -> Result<(),Error> {
 		if self.if_paused {
-			let time_read = read_time()?;
+			let time_read = read_time();
 			let last_start_time = match self.last_start_time {
 				Some(t) => {
 					let pause = match self.last_pause_time {
-						Some(t) => t,
-						None => 0,
+						Some(t) => time_read - t,
+						None => Duration::ZERO,
 					};
-					t + time_read - pause
+					t + pause
 				},
 				None => time_read,
 			};
@@ -60,10 +60,10 @@ impl Timer {
 	/// pause the timer, returns error if the timer has paused
 	pub fn pause(&mut self) -> Result<(),Error> {
 		if !self.if_paused {
-			let time_read = read_time()?;
+			let time_read = read_time();
 			let last_pause_time = Some(time_read);
 			self.if_paused = true;
-			self.last_start_time = last_pause_time;
+			self.last_pause_time = last_pause_time;
 			Ok(())
 		}else {
 			Err(Error::TimerError(TimerError::Paused))
@@ -71,24 +71,24 @@ impl Timer {
 	}
 
 	/// read the timer, returns error if the timer has not set correctly
-	pub fn read(&self) -> Result<i64,Error> {
-		let time: i64;
+	pub fn read(&self) -> Result<Duration,Error> {
+		let time: Duration;
 		if self.if_paused {
 			let pause = match self.last_pause_time {
 				Some(t) => t,
-				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't pause yet"))))
+				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't paused yet"))))
 			};
 			let start = match self.last_start_time {
 				Some(t) => t,
-				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't start yet"))))
+				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't started yet"))))
 			};
 			time = pause - start;
 			Ok(time)
 		}else {
-			let now = read_time()?;
+			let now = read_time();
 			let start = match self.last_start_time {
 				Some(t) => t,
-				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't start yet"))))
+				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't started yet"))))
 			};
 			time = now - start;
 			Ok(time) 
@@ -96,7 +96,7 @@ impl Timer {
 	}
 
 	/// set the timer, returns error if the timer has not paused
-	pub fn set(&mut self, delay: i64) -> Result<(),Error> {
+	pub fn set(&mut self, delay: Duration) -> Result<(),Error> {
 		let last_start_time = match self.last_start_time {
 			Some(t) => t - delay,
 			None => return Err(Error::TimerError(TimerError::CouldNotSet(String::from("haven't paused"))))
@@ -104,14 +104,15 @@ impl Timer {
 		self.last_start_time = Some(last_start_time);
 		Ok(())
 	}
+
+	/// check if a timer is started
+	pub fn is_started(&self) -> bool {
+		!self.if_paused
+	}
 }
 
-fn read_time() -> Result<i64, Error> {
-	let time = SystemTime::now().duration_since(UNIX_EPOCH);
-	match time {
-		Ok(t) => return Ok(t.as_micros() as i64),
-		Err(e) => return Err(Error::TimerError(TimerError::CouldNotRead(e.to_string()))),
-	}
+fn read_time() -> OffsetDateTime {
+	OffsetDateTime::now_utc()
 }
 
 impl Copy for Timer {}
