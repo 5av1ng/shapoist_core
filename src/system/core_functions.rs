@@ -1,3 +1,4 @@
+use nablo_shape::prelude::Area;
 use kira::tween::Tween;
 use kira::StartTime;
 use kira::clock::ClockTime;
@@ -193,6 +194,7 @@ impl ShapoistCore {
 				}
 			}
 		}
+
 		if self.play_info.is_some() && self.timer.is_started() {
 			trace!("detected is play a chart, updating each shape...");
 			let play_info = self.play_info.as_mut().unwrap();
@@ -272,6 +274,24 @@ impl ShapoistCore {
 			if let PlayMode::Auto = play_info.play_mode {
 				self.judge(JudgeEvent::default())?;
 			}
+		}
+
+		if let (Some(editor), Some((chart, _))) = (&mut self.chart_editor, &self.current_chart) {
+			let is_keep = |select: &Select| -> bool {
+				match select {
+					Select::ClickEffect(id) => chart.click_effects.get(id).is_some(),
+					Select::Note(id) => chart.notes.get(id).is_some(),
+					Select::Shape(id) => chart.shapes.get(id).is_some(),
+					Select::JudgeField(id) => chart.judge_fields.get(id).is_some(),
+					Select::Script(_) => false,
+				}
+			};
+			if let Some(t) = &editor.now_select {
+				if !is_keep(t) {
+					editor.now_select = None
+				}
+			}
+			editor.multi_select.retain(|inner| is_keep(inner));
 		}
 		
 		Ok(())
@@ -825,7 +845,7 @@ impl PlayInfo {
 								continue;
 							}
 							for click in &event.clicks {
-								let area = field.inner.area.clone().transform(&Style {
+								let area = Area::new(field.inner.min, field.inner.max).transform(&Style {
 									position: field.inner.position,
 									size: field.inner.scale,
 									rotate: field.inner.rotate,

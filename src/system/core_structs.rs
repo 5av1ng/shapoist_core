@@ -274,7 +274,8 @@ impl Default for Chart {
 			})]),
 			judge_fields: HashMap::from([(String::from("default"), JudgeField {
 				inner: JudgeFieldInner {
-					area: Area::new(Vec2::ZERO, Vec2::same(600.0)),
+					min: Vec2::ZERO, 
+					max: Vec2::same(600.0),
 					..Default::default()
 				},
 				animation: HashMap::new(),
@@ -389,7 +390,8 @@ impl CanBeAnimated<'_, JudgeFieldInner> for JudgeField {
 #[serde(default)]
 /// to use CanBeAnimated trait
 pub struct JudgeFieldInner {
-	pub area: Area,
+	pub min: Vec2,
+	pub max: Vec2,
 	pub position: Vec2,
 	pub transform_origin: Vec2,
 	pub scale: Vec2,
@@ -399,7 +401,8 @@ pub struct JudgeFieldInner {
 impl Default for JudgeFieldInner {
 	fn default() -> Self {
 		Self {
-			area: Area::default(),
+			min: Vec2::ZERO,
+			max: Vec2::ZERO,
 			rotate: f32::default(),
 			position: Vec2::default(),
 			transform_origin: Vec2::default(),
