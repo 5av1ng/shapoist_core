@@ -106,7 +106,7 @@ fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S:
 	where S: Serializer 
 {
 	let mut serde_state = serde::Serializer::serialize_struct(serializer, "Duration", 1)?;
-	serde::ser::SerializeStruct::serialize_field(&mut serde_state, "time", &duration.as_seconds_f32())?;
+	serde::ser::SerializeStruct::serialize_field(&mut serde_state, "time", &(duration.as_seconds_f32() * 1e3))?;
 	serde::ser::SerializeStruct::end(serde_state)
 }
 
@@ -120,7 +120,7 @@ fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 	where D: Deserializer<'de>
 {
 	let de = DeDuration::deserialize(deserializer)?;
-	Ok(Duration::seconds_f32(de.time))
+	Ok(Duration::seconds_f32(de.time / 1e3))
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -471,7 +471,6 @@ pub struct PlayInfo {
 	/// where the audio plays
 	pub judge_vec: Vec<Judge>,
 	pub audio_manager: AudioManager,
-	pub audio_clock: kira::clock::ClockHandle,
 	pub total_notes: usize,
 	pub judged_notes: usize,
 	pub is_finished: bool,
