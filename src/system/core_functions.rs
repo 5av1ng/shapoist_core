@@ -1,8 +1,6 @@
+use std::ops::RangeFrom;
 use nablo_shape::prelude::Area;
 use kira::tween::Tween;
-use kira::StartTime;
-use kira::clock::ClockTime;
-use kira::clock::ClockSpeed;
 use nablo_shape::prelude::shape_elements::Style;
 use crate::system::ChartEditError;
 use nablo_data::CanBeAnimated;
@@ -211,17 +209,11 @@ impl ShapoistCore {
 				let play_time = time + play_info.offcet + self.settings.offcet - Duration::seconds(3);
 				if !play_info.is_track_played && play_time > Duration::ZERO {
 					info!("music playing...");
-					let sound_setting = StaticSoundSettings::new().start_time(StartTime::ClockTime(ClockTime {
-						clock: play_info.audio_clock.id(),
-						ticks: (play_time.as_seconds_f32() * 1e3).round() as u64,
-					}));
+					let sound_setting = StaticSoundSettings::new().playback_region(RangeFrom{ start: play_time.as_seconds_f64() });
 					let static_sound = match StaticSoundData::from_file(&play_info.track_path, sound_setting){
 						Ok(t) => t,
 						Err(e) => return Err(ChartError::from(e).into()),
 					};
-					if let Err(e) = play_info.audio_clock.start() {
-						return Err(PlayError::from(e).into());
-					}
 					if let Err(e) = play_info.audio_manager.play(static_sound) {
 						return Err(PlayError::from(e).into());
 					};
@@ -343,13 +335,9 @@ impl ShapoistCore {
 			vec.sort_by(|a, b| a.judge_time.cmp(&b.judge_time));
 			total_notes = total_notes + vec.len();
 		}
-		let mut audio_manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
+		let audio_manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
 			Ok(t) => t,
 			Err(e) => return Err(PlayError::ManagerCreateFail(e).into()),
-		};
-		let audio_clock = match audio_manager.add_clock(ClockSpeed::SecondsPerTick(0.001)) {
-			Ok(t) => t,
-			Err(e) => return Err(PlayError::from(e).into()),
 		};
 		let play_info = Some(PlayInfo {
 			shapes,
@@ -364,7 +352,6 @@ impl ShapoistCore {
 			play_mode,
 			replay: Replay::default(),
 			audio_manager,
-			audio_clock,
 			total_notes,
 			judged_notes: 0,
 			click_effects: chart.click_effects.clone(),
@@ -391,9 +378,6 @@ impl ShapoistCore {
 			}) {
 				return Err(PlayError::from(e).into());
 			}
-			if let Err(e) = play_info.audio_clock.pause() {
-				return Err(PlayError::from(e).into());
-			}
 		}else {
 			return Err(PlayError::HaventStart.into())
 		};
@@ -407,9 +391,6 @@ impl ShapoistCore {
 				duration: std::time::Duration::from_secs(1),
 				..Default::default()
 			}) {
-				return Err(PlayError::from(e).into());
-			}
-			if let Err(e) = play_info.audio_clock.start() {
 				return Err(PlayError::from(e).into());
 			}
 		}else {
