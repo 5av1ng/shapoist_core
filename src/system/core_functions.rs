@@ -40,7 +40,7 @@ impl ShapoistCore {
 	#[cfg(not(target_arch="wasm32"))]
 	pub fn new(assets_path: &str) -> Result<Self, Error> {
 		debug!("creating new ShapoistCore struct..");
-		info!("checking initlizaition infomation");
+		info!("checking initlizaition infomation from path: {}", assets_path);
 		match read_every_file(format!("{}/shapoist_assets", assets_path)) {
 			Ok(_) => {},
 			Err(e) => {
@@ -133,13 +133,12 @@ impl ShapoistCore {
 		}
 	} 
 
-	#[cfg(target_arch="wasm32")]
-	pub fn new(_: &str) -> Result<Self, Error> {
-		debug!("creating new ShapoistCore struct..");
-		info!("running in web mode, using minimal setup.");
+	/// create minimal core, used in wasm.
+	pub fn minimal() -> Self {
+		debug!("creating new minimal ShapoistCore struct..");
 		// web user should be able to get their setting by login.
 
-		Ok(Self::default())
+		Self::default()
 	}
 
 	// /// running shapoist in terminal mode. would be a completely mess if you try to play in this mode.
@@ -571,8 +570,7 @@ impl ShapoistCore {
 
 #[allow(dead_code)]
 fn log_name_generate(assets_path: &str) -> String {
-	let fmt = "%Y-%m-%d %H%M%S";
-	let now = chrono::Local::now().format(fmt).to_string();
+	let now = time::OffsetDateTime::now_utc();
 	format!("{}/shapoist_assets/log/[{}]running.log", assets_path, now)
 }
 
@@ -977,7 +975,15 @@ fn process_log_path(assets_path: &str, settings: &Settings) -> Result<String, Er
 		let metadata = read_metadata(log_file.clone())?;
 		if let Ok(t) = match metadata.created() {
 			Ok(t) => t,
-			Err(e) => return Err(e.into())
+			Err(e) => {
+				cfg_if::cfg_if! {
+					if #[cfg(target_os = "android")] {
+						return Ok(log_name)
+					}else {
+						return Err(e.into())
+					}
+				}
+			}
 		}.elapsed() {
 			if t > settings.log_remain {
 				remove_file(log_file)?
