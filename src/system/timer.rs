@@ -2,117 +2,93 @@
 
 use time::OffsetDateTime;
 use time::Duration;
-use crate::system::Error;
-
-#[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq, thiserror::Error)]
-pub enum TimerError {
-	#[error("run a running timer")]
-	Running,
-	#[error("pause a paused timer")]
-	Paused,
-	#[error("cant read timer because {0}")]
-	CouldNotRead(String),
-	#[error("cant set timer because {0}")]
-	CouldNotSet(String)
-}
 
 #[derive(serde::Deserialize, serde::Serialize, Debug, Clone, PartialEq)]
 #[serde(default)]
+/// a simple timer
 pub struct Timer {
-	last_pause_time: Option<OffsetDateTime>,
-	last_start_time: Option<OffsetDateTime>,
-	if_paused:bool,
-}
-
-impl Default for Timer {
-	fn default() -> Self {
-		Self {
-			last_pause_time: None,
-			last_start_time: None,
-			if_paused: true,
-		}
-	}
+	/// when timer start, if start_time > pause_time then its satred
+	pub start_time: OffsetDateTime,
+	/// when timer pasue, if pause_time > start_time then its paused
+	pub pause_time: OffsetDateTime
 }
 
 impl Timer {
-	/// start the timer, returns error if the timer has started
-	pub fn start(&mut self) -> Result<(),Error> {
-		if self.if_paused {
-			let time_read = read_time();
-			let last_start_time = match self.last_start_time {
-				Some(t) => {
-					let pause = match self.last_pause_time {
-						Some(t) => time_read - t,
-						None => Duration::ZERO,
-					};
-					t + pause
-				},
-				None => time_read,
-			};
-			self.last_start_time = Some(last_start_time);
-			self.if_paused = false;
-			Ok(())
-		}else {
-			Err(Error::TimerError(TimerError::Running))
+	/// create a new timer
+	pub fn new() -> Self {
+		let start_time = OffsetDateTime::now_utc();
+		let pause_time = OffsetDateTime::now_utc();
+		Self {
+			start_time,
+			pause_time,
 		}
 	}
 
-	/// pause the timer, returns error if the timer has paused
-	pub fn pause(&mut self) -> Result<(),Error> {
-		if !self.if_paused {
-			let time_read = read_time();
-			let last_pause_time = Some(time_read);
-			self.if_paused = true;
-			self.last_pause_time = last_pause_time;
-			Ok(())
-		}else {
-			Err(Error::TimerError(TimerError::Paused))
+	/// reset the timer
+	pub fn reset(&mut self) {
+		let start_time = OffsetDateTime::now_utc();
+		let pause_time = OffsetDateTime::now_utc();
+		*self = Self {
+			start_time,
+			pause_time,
 		}
-	}
-
-	/// read the timer, returns error if the timer has not set correctly
-	pub fn read(&self) -> Result<Duration,Error> {
-		let time: Duration;
-		if self.if_paused {
-			let pause = match self.last_pause_time {
-				Some(t) => t,
-				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't paused yet"))))
-			};
-			let start = match self.last_start_time {
-				Some(t) => t,
-				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't started yet"))))
-			};
-			time = pause - start;
-			Ok(time)
-		}else {
-			let now = read_time();
-			let start = match self.last_start_time {
-				Some(t) => t,
-				None => return Err(Error::TimerError(TimerError::CouldNotRead(String::from("havn't started yet"))))
-			};
-			time = now - start;
-			Ok(time) 
-		}
-	}
-
-	/// set the timer, returns error if the timer has not paused
-	pub fn set(&mut self, delay: Duration) -> Result<(),Error> {
-		let last_start_time = match self.last_start_time {
-			Some(t) => t - delay,
-			None => return Err(Error::TimerError(TimerError::CouldNotSet(String::from("haven't paused"))))
-		};
-		self.last_start_time = Some(last_start_time);
-		Ok(())
 	}
 
 	/// check if a timer is started
 	pub fn is_started(&self) -> bool {
-		!self.if_paused
+		self.start_time >= self.pause_time
+	}
+
+	/// read the timer
+	pub fn read(&self) -> Duration {
+		if self.is_started() {
+			OffsetDateTime::now_utc() - self.start_time
+		}else {
+			self.pause_time - self.start_time
+		}
+	}
+
+	/// pause the timer, will do nothing if timer has paused
+	pub fn pause(&mut self){
+		if self.is_started() {
+			self.pause_time = OffsetDateTime::now_utc();
+		}
+	}
+
+	/// start the timer, will do nothing if timer has started
+	pub fn start(&mut self) {
+		let read = self.read();
+		if !self.is_started() {
+			self.pause_time = OffsetDateTime::now_utc() - read - Duration::seconds(2);
+			self.start_time = OffsetDateTime::now_utc() - read;
+		};
+	}
+
+	/// set the timer, positive duration means earlier, read should be larger
+	pub fn set(&mut self, offset: Duration) {
+		if self.is_started() {
+			self.pause_time = self.pause_time - offset;
+			self.start_time = self.start_time - offset;
+		}else {
+			self.pause_time = self.start_time + offset;
+		}
+	}
+
+	/// set the timer to exactly where you give.
+	pub fn set_to(&mut self, pointer: Duration){
+		if self.is_started() {
+			self.pause_time = OffsetDateTime::now_utc() - pointer;
+			self.start_time = OffsetDateTime::now_utc() - pointer;
+		}else {
+			self.pause_time = self.start_time + pointer;
+		}
 	}
 }
 
-fn read_time() -> OffsetDateTime {
-	OffsetDateTime::now_utc()
+impl Default for Timer {
+	fn default() -> Self {
+		Self::new()
+	}
 }
 
 impl Copy for Timer {}

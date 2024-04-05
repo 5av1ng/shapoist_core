@@ -1,3 +1,4 @@
+use nablo_shape::prelude::Vec2;
 use std::ops::RangeFrom;
 use nablo_shape::prelude::Area;
 use kira::tween::Tween;
@@ -13,9 +14,9 @@ use crate::system::command::Command;
 use crate::system::command::CommandError;
 use crate::system::ChartError;
 use crate::system::core_structs::Chart;
-#[cfg(not(target_arch = "wasm32"))]
+// #[cfg(not(target_arch = "wasm32"))]
 use kira::sound::static_sound::StaticSoundData;
-#[cfg(not(target_arch = "wasm32"))]
+// #[cfg(not(target_arch = "wasm32"))]
 use kira::sound::static_sound::StaticSoundSettings;
 use crate::system::core_structs::ScriptInfo;
 use crate::system::core_structs::Condition;
@@ -195,76 +196,7 @@ impl ShapoistCore {
 		if self.play_info.is_some() && self.timer.is_started() {
 			trace!("detected is play a chart, updating each shape...");
 			let play_info = self.play_info.as_mut().unwrap();
-			let time = self.timer.read()?;
-			if play_info.is_finished {
-				if let Err(e) = play_info.audio_manager.pause(Tween {
-					duration: std::time::Duration::from_secs(1),
-					..Default::default()
-				}) {
-					return Err(PlayError::from(e).into());
-				}
-			}
-			if !play_info.is_finished {
-				let play_time = time + play_info.offcet + self.settings.offcet - Duration::seconds(3);
-				if !play_info.is_track_played && play_time > Duration::ZERO {
-					info!("music playing...");
-					let sound_setting = StaticSoundSettings::new().playback_region(RangeFrom{ start: play_time.as_seconds_f64() });
-					let static_sound = match StaticSoundData::from_file(&play_info.track_path, sound_setting){
-						Ok(t) => t,
-						Err(e) => return Err(ChartError::from(e).into()),
-					};
-					if let Err(e) = play_info.audio_manager.play(static_sound) {
-						return Err(PlayError::from(e).into());
-					};
-
-					play_info.is_track_played = true;
-					info!("music played");
-				}
-			}
-
-			if !play_info.is_finished && time > Duration::seconds(3) {
-				let time = time - Duration::seconds(3);
-				
-
-				if time > play_info.sustain_time {
-					play_info.is_finished = true;
-					play_info.shapes.clear();
-					play_info.notes.clear();
-					play_info.judge_fields.clear();
-					play_info.click_effects.clear();
-				};
-				for i in play_info.current_render..play_info.shapes.len() {
-					if play_info.shapes[i].start_time < time {
-						play_info.render_queue.push(play_info.shapes[i].clone());
-					}
-					if play_info.shapes[i].start_time > time {
-						play_info.current_render = i;
-						break;
-					}
-				}
-				play_info.render_queue.retain_mut(|inner| {
-					if let Err(e) = inner.caculate(&time) {
-						error!("{}", e);
-					};
-					(inner.start_time + inner.sustain_time > time) && (inner.start_time < time)
-				});
-				let mut judge_field_to_delete = vec!();
-				for (id, (field, _)) in &mut play_info.judge_fields {
-					if field.start_time + field.sustain_time < time {
-						judge_field_to_delete.push(id.clone());
-						continue;
-					}
-					if let Err(e) = field.caculate(&time) {
-						error!("{}", e);
-					};
-				};
-				for id in judge_field_to_delete {
-					play_info.judge_fields.remove(&id);
-				}
-			}
-			if let PlayMode::Auto = play_info.play_mode {
-				self.judge(JudgeEvent::default())?;
-			}
+			play_info.frame(&self.timer, self.settings.offset, true)?;
 		}
 
 		if let (Some(editor), Some((chart, _))) = (&mut self.chart_editor, &self.current_chart) {
@@ -293,10 +225,16 @@ impl ShapoistCore {
 		self.play_info = None;
 	}
 
+	/// as name says
 	pub fn play_with_time(&mut self, play_mode: PlayMode, time: Duration) -> Result<(), Error> {
 		self.play(play_mode)?;
+		debug!("setting timer...");
 		self.pause()?;
-		self.set(time)?;
+		self.timer.set_to(time + Duration::seconds(3));
+		if let Some(t) = &mut self.play_info {
+			t.current_render = 0;
+		}
+		debug!("setted timer...");
 		self.resume()
 	}
 
@@ -309,6 +247,7 @@ impl ShapoistCore {
 		}else {
 			return Err(PlayError::NoChartLoaded.into());
 		};
+		debug!("moving sources");
 		let mut shapes = vec!();
 		for (_, shape) in chart.shapes.into_iter() {
 			shapes.push(shape);
@@ -334,6 +273,7 @@ impl ShapoistCore {
 			vec.sort_by(|a, b| a.judge_time.cmp(&b.judge_time));
 			total_notes = total_notes + vec.len();
 		}
+		debug!("setting audio...");
 		let audio_manager = match AudioManager::<DefaultBackend>::new(AudioManagerSettings::default()) {
 			Ok(t) => t,
 			Err(e) => return Err(PlayError::ManagerCreateFail(e).into()),
@@ -357,14 +297,66 @@ impl ShapoistCore {
 			is_finished: false,
 			sustain_time: info.sustain_time,
 			current_render: 0,
-			offcet: info.offcet,
+			offset: info.offset,
 			is_track_played: false,
-			track_path: format!("{}/song.mp3",info.path.display()).into()
+			track_path: format!("{}/song.mp3",info.path.display()).into(),
+			#[cfg(target_arch = "wasm32")]
+			sound_data: vec!(),
+			judged_note_id: vec!()
 		});
 		self.play_info = play_info;
+		debug!("setting timer...");
 		self.timer = Timer::default();
-		self.timer.start()?;
+		self.timer.start();
+		debug!("started play");
 		Ok(())
+	}
+
+	/// if chart have changed, you should call this
+	pub fn refresh_play_info(&mut self) -> Result<(), Error> {
+		let chart = if let Some((chart, _)) = &mut self.current_chart {
+			let out = chart.clone();
+			out
+		}else {
+			return Err(PlayError::NoChartLoaded.into());
+		};
+		if let Some(play_info) = &mut self.play_info {
+			debug!("moving sources");
+			let mut shapes = vec!();
+			for (_, shape) in chart.shapes.into_iter() {
+				shapes.push(shape);
+			}
+			shapes.sort_by(|a, b| a.start_time.cmp(&b.start_time));
+			let mut judge_fields = HashMap::new();
+			for (id, judge_field) in chart.judge_fields.into_iter() {
+				judge_fields.insert(id.clone(), (judge_field, JudgeInfo {
+					current_judge: 0,
+					judge_tracks: vec!()
+				}));
+			}
+			let mut notes: HashMap<String, Vec<Note>> = HashMap::new();
+			for (_, note) in chart.notes.into_iter() {
+				if let Some(t)  = notes.get_mut(&note.judge_field_id) {
+					t.push(note);
+				}else {
+					notes.insert(note.judge_field_id.clone(), vec!(note));
+				};
+			}
+			let mut total_notes = 0;
+			for (_, vec) in &mut notes {
+				vec.sort_by(|a, b| a.judge_time.cmp(&b.judge_time));
+				total_notes = total_notes + vec.len();
+			}
+			play_info.shapes = shapes;
+			play_info.judge_fields = judge_fields;
+			play_info.notes = notes;
+			play_info.total_notes = total_notes;
+			play_info.current_render = 0;
+			play_info.render_queue.clear();
+			Ok(())
+		}else {
+			Err(PlayError::HaventStart.into())
+		}
 	}
 
 	/// pause playing
@@ -380,7 +372,8 @@ impl ShapoistCore {
 		}else {
 			return Err(PlayError::HaventStart.into())
 		};
-		self.timer.pause()
+		self.timer.pause();
+		Ok(())
 	}
 
 	/// resume playing
@@ -395,12 +388,13 @@ impl ShapoistCore {
 		}else {
 			return Err(PlayError::HaventStart.into())
 		};
-		self.timer.start()
+		self.timer.start();
+		Ok(())
 	}
 
 	/// get current time
 	pub fn current(&mut self) -> Result<Duration, Error> {
-		Ok(self.timer.read()? - Duration::seconds(3))
+		Ok(self.timer.read() - Duration::seconds(3))
 	}
 
 	/// single select an element
@@ -469,7 +463,7 @@ impl ShapoistCore {
 
 	/// set chart play time
 	pub fn set(&mut self, input: Duration) -> Result<(), Error> {
-		self.timer.set(input + Duration::seconds(3))?;
+		self.timer.set(input + Duration::seconds(3));
 		if let Some(t) = &mut self.play_info {
 			t.current_render = 0;
 		}
@@ -484,7 +478,7 @@ impl ShapoistCore {
 		self.chart_editor = Some(Default::default());
 		self.play(PlayMode::Auto)?;
 		self.timer = Timer::default();
-		self.timer.start()?;
+		self.timer.start();
 		self.pause()?;
 		Ok(())
 	}
@@ -499,6 +493,7 @@ impl ShapoistCore {
 	}
 
 	/// create new chart with giving info
+	#[cfg(not(target_arch = "wasm32"))]
 	pub fn create_new_chart(&mut self, song_name: String, producer: String, charter: String, artist: String, track_path: PathBuf, image_path: PathBuf) -> Result<(), Error> {
 		if song_name.is_empty() | producer.is_empty() | charter.is_empty() | artist.is_empty() | (track_path == PathBuf::new()) | (image_path == PathBuf::new()) {
 			return Err(ChartEditError::MissingInfo.into());
@@ -529,6 +524,13 @@ impl ShapoistCore {
 		self.read_chart(&mut chart_info)
 	}
 
+	#[cfg(target_arch = "wasm32")]
+	/// create new chart with giving info
+	pub fn create_new_chart(&mut self, _: String, _: String, _: String, _: String, _: PathBuf, _: PathBuf) -> Result<(), Error> {
+		Err(Error::PlatformUnsupport(String::from("wasm32")))
+	}
+
+	/// as name says
 	pub fn save_current_chart(&mut self) -> Result<(), Error> {
 		if let Some((chart, info)) = &self.current_chart {
 			let path = format!("{}",info.path.display());
@@ -538,6 +540,134 @@ impl ShapoistCore {
 		}else {
 			return Err(PlayError::NoChartLoaded.into())
 		}
+	}
+
+	/// as name says
+	pub fn delete_current_chart(&mut self) -> Result<(), Error> {
+		let info = if let Some((_, info)) = self.current_chart.as_ref() {
+			info.clone()
+		}else {
+			return Err(PlayError::NoChartLoaded.into())
+		};
+		self.current_chart = None;
+		self.delete_chart(&info)
+	}
+
+	/// as name says
+	pub fn delete_chart(&mut self, chart_info: &ChartInfo) -> Result<(), Error> {
+		self.chart_list.retain(|inner| inner != chart_info);
+		remove_path(&chart_info.path)
+	}
+
+	/// copy current selected values, filter returns ture means need to copy
+	pub fn copy_select(&mut self, current: Duration, filter: impl Fn(&Select) -> bool) -> Result<(), Error> {
+		let current_selects = self.current_selects()?;
+		if let Some(editor) = &mut self.chart_editor {
+			editor.clone_buffer.clear();
+			if let Some((chart, _)) = &mut self.current_chart {
+				for select in current_selects {
+					if filter(&select) {
+						match select {
+							Select::Note(id) => {
+								if let Some(inner) = chart.notes.get(&id) {
+									let mut inner = inner.clone();
+									inner.judge_time = inner.judge_time - current;
+									editor.clone_buffer.push(SelectUnchange::Note(id, inner))
+								}
+							},
+							Select::Shape(id) => {
+								if let Some(inner) = chart.shapes.get(&id) {
+									let mut inner = inner.clone();
+									inner.start_time = inner.start_time - current;
+									for (_, animation) in &mut inner.animation {
+										animation.start_time = animation.start_time - current;
+									}
+									editor.clone_buffer.push(SelectUnchange::Shape(id, inner))
+								}
+							},
+							Select::JudgeField(id) => {
+								if let Some(inner) = chart.judge_fields.get(&id) {
+									let mut inner = inner.clone();
+									inner.start_time = inner.start_time - current;
+									for (_, animation) in &mut inner.animation {
+										animation.start_time = animation.start_time - current;
+									}
+									editor.clone_buffer.push(SelectUnchange::JudgeField(id, inner))
+								}
+							},
+							Select::ClickEffect(_) => {},
+							Select::Script(_) => {},
+						}
+					}
+				}
+				Ok(())
+			}else {
+				Err(PlayError::NoChartLoaded.into())
+			}
+		}else {
+			Err(ChartEditError::NotInEditMode.into())
+		}
+	}
+
+	/// paste copied Error ouccurs when not copied
+	pub fn paste_select(&mut self, current: Duration) -> Result<(), Error> {
+		if let Some(editor) = &mut self.chart_editor {
+			if let Some((chart, _)) = &mut self.current_chart {
+				let inner = editor.clone_buffer.clone();
+				for inner in inner {
+					match inner {
+						SelectUnchange::Shape(id, mut t) => {
+							let mut index = 2;
+							t.start_time = t.start_time + current;
+							for (_, animation) in &mut t.animation {
+								animation.start_time = animation.start_time + current;
+							}
+							loop {
+								if !chart.shapes.contains_key(&format!("{} #{}", id, index)) {
+									chart.shapes.insert(format!("{} #{}", id, index), t);
+									break;
+								}
+								index += 1;
+							}
+							
+						},
+						SelectUnchange::JudgeField(id, mut t) => {
+							let mut index = 2;
+							t.start_time = t.start_time + current;
+							for (_, animation) in &mut t.animation {
+								animation.start_time = animation.start_time + current;
+							}
+							loop {
+								if !chart.judge_fields.contains_key(&format!("{} #{}", id, index)) {
+									chart.judge_fields.insert(format!("{} #{}", id, index), t);
+									break;
+								}
+								index += 1;
+							}
+						},
+						SelectUnchange::Note(id, mut t) => {
+							let mut index = 2;
+							t.judge_time = t.judge_time + current;
+							loop {
+								if !chart.notes.contains_key(&format!("{} #{}", id, index)) {
+									chart.notes.insert(format!("{} #{}", id, index), t);
+									break;
+								}
+								index += 1;
+							}
+						},
+						SelectUnchange::ClickEffect(_, _) => {},
+						SelectUnchange::Script(_, _) => {},
+					}
+				}
+				Ok(())
+			}else {
+				Err(PlayError::NoChartLoaded.into())
+			}
+		}else {
+			Err(ChartEditError::NotInEditMode.into())
+		}
+		
 	}
 
 	/// if we didn't have our shapoist_assets floor, we will create one
@@ -710,8 +840,98 @@ impl ScriptInfo {
 }
 
 impl PlayInfo {
+	/// call this function to render a single frame
+	pub fn frame(&mut self, timer: &Timer, offset: Duration, will_play_music: bool) -> Result<(), Error> {
+		let time = timer.read();
+		if self.is_finished {
+			debug!("play finished");
+			if let Err(e) = self.audio_manager.pause(Tween {
+				duration: std::time::Duration::from_secs(1),
+				..Default::default()
+			}) {
+				return Err(PlayError::from(e).into());
+			}
+		}
+
+		if !self.is_finished {
+			let play_time = time + self.offset + offset - Duration::seconds(3);
+			if !self.is_track_played && play_time > Duration::ZERO && will_play_music {
+				info!("music playing...");
+				let sound_setting = StaticSoundSettings::new().playback_region(RangeFrom{ start: play_time.as_seconds_f64() });
+				cfg_if::cfg_if! {
+					if #[cfg(target_arch = "wasm32")] {
+						let static_sound = match StaticSoundData::from_media_source(std::io::Cursor::new(self.sound_data.clone()), sound_setting) {
+							Ok(t) => t,
+							Err(e) => return Err(ChartError::from(e).into()),
+						};
+					}else {
+						let static_sound = match StaticSoundData::from_file(&self.track_path, sound_setting) {
+							Ok(t) => t,
+							Err(e) => return Err(ChartError::from(e).into()),
+						};
+					}
+				}
+				
+				if let Err(e) = self.audio_manager.play(static_sound) {
+					return Err(PlayError::from(e).into());
+				};
+
+				self.is_track_played = true;
+				info!("music played");
+			}
+		}
+
+		if !self.is_finished && time > Duration::seconds(3) {
+			let time = time - Duration::seconds(3);
+
+			if time > self.sustain_time {
+				self.is_finished = true;
+				self.shapes.clear();
+				self.notes.clear();
+				self.judge_fields.clear();
+				self.click_effects.clear();
+			};
+			for i in self.current_render..self.shapes.len() {
+				if self.shapes[i].start_time < time {
+					self.render_queue.push(self.shapes[i].clone());
+					self.current_render = i + 1;
+				}else {
+					self.current_render = i;
+					break;
+				}
+			}
+			self.render_queue.retain_mut(|inner| {
+				if let Err(e) = inner.caculate(&time) {
+					error!("{}", e);
+				};
+				if let Some(t) = &inner.linked_note_id {
+					((inner.start_time + inner.sustain_time > time) && (inner.start_time < time)) && !self.judged_note_id.contains(&t)
+				}else {
+					(inner.start_time + inner.sustain_time > time) && (inner.start_time < time)
+				}
+			});
+			let mut judge_field_to_delete = vec!();
+			for (id, (field, _)) in &mut self.judge_fields {
+				if field.start_time + field.sustain_time < time {
+					judge_field_to_delete.push(id.clone());
+					continue;
+				}
+				if let Err(e) = field.caculate(&time) {
+					error!("{}", e);
+				};
+			};
+			for id in judge_field_to_delete {
+				self.judge_fields.remove(&id);
+			}
+		}
+		if let PlayMode::Auto = self.play_mode {
+			self.judge(JudgeEvent::default(), timer)?;
+		}
+		Ok(())
+	}
+
 	fn judge(&mut self, event: JudgeEvent, timer: &Timer) -> Result<(), Error> {
-		let time = timer.read()? - Duration::seconds(3);
+		let time = timer.read() - Duration::seconds(3);
 		if time < Duration::ZERO {
 			return Ok(())
 		}
@@ -748,9 +968,11 @@ impl PlayInfo {
 											let judge_check = || -> Judge {
 												if delta < Duration::milliseconds(50) {
 													Judge::Immaculate((delta / Duration::milliseconds(50)) as f32)
-												}else if delta < Duration::milliseconds(90) {
+												}else if delta < Duration::milliseconds(70) {
 													Judge::Extra
-												}else if delta < Duration::milliseconds(130) {
+												}else if delta < Duration::milliseconds(120) {
+													Judge::Normal
+												}else if delta < Duration::milliseconds(150) {
 													Judge::Fade
 												}else {
 													Judge::Miss
@@ -799,11 +1021,13 @@ impl PlayInfo {
 										_ => {},
 									}
 									if let Some(judge_inner) = &judge {
-										if let Some(shapes) = self.click_effects.get(&note.click_effect_id) {
-											let mut shapes = shapes.get_shape(&time, &judge_inner);
-											self.render_queue.append(&mut shapes);
-										}
+										let mut shapes = match self.click_effects.get(&note.click_effect_id) {
+											Some(t) => t.clone(),
+											None => Default::default()
+										}.get_shape(&time, &judge_inner, note.click_effect_position);
+										self.render_queue.append(&mut shapes);
 										judges.push(judge_inner.clone());
+										self.judged_note_id.push(id.to_string());
 									}
 									judge.is_none()
 								}
@@ -816,10 +1040,12 @@ impl PlayInfo {
 							}
 							if delta > Duration::milliseconds(150) {
 								judges.push(Judge::Miss);
-								if let Some(shapes) = self.click_effects.get(&notes[note_id].click_effect_id) {
-									let mut shapes = shapes.get_shape(&time, &Judge::Miss);
-									self.render_queue.append(&mut shapes);
-								}
+								self.judged_note_id.push(notes[note_id].note_id.to_string());
+								let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+									Some(t) => t.clone(),
+									None => Default::default()
+								}.get_shape(&time, &Judge::Miss, notes[note_id].click_effect_position);
+								self.render_queue.append(&mut shapes);
 								judge_track.current_judge = judge_track.current_judge + 1;
 								continue;
 							}
@@ -855,29 +1081,35 @@ impl PlayInfo {
 											let delta = delta.abs();
 											if delta < Duration::milliseconds(50) {
 												judge = Judge::Immaculate((delta / Duration::milliseconds(50)) as f32);
-											}else if delta < Duration::milliseconds(90) {
+											}else if delta < Duration::milliseconds(70) {
 												judge = Judge::Extra
-											}else if delta < Duration::milliseconds(130) {
-												judge = Judge::Fade
+											}else if delta < Duration::milliseconds(120) {
+												judge = Judge::Normal
+											}else if delta < Duration::milliseconds(150) {
+												judge = Judge::Fade;
 											}else {
 												judge = Judge::Miss;
 											}
 
 											judge_track.current_judge = judge_track.current_judge + 1;
-											if let Some(shapes) = self.click_effects.get(&notes[note_id].click_effect_id) {
-												let mut shapes = shapes.get_shape(&time, &judge);
-												self.render_queue.append(&mut shapes);
-											}
+											let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+												Some(t) => t.clone(),
+												None => Default::default()
+											}.get_shape(&time, &judge, notes[note_id].click_effect_position);
+											self.render_queue.append(&mut shapes);
+											self.judged_note_id.push(notes[note_id].note_id.to_string());
 											judges.push(judge);
 										},
 										(_, JudgeType::Slide) => {
 											let judge = Judge::Immaculate(1.0);
 
 											judge_track.current_judge = judge_track.current_judge + 1;
-											if let Some(shapes) = self.click_effects.get(&notes[note_id].click_effect_id) {
-												let mut shapes = shapes.get_shape(&time, &judge);
-												self.render_queue.append(&mut shapes);
-											}
+											let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+												Some(t) => t.clone(),
+												None => Default::default()
+											}.get_shape(&time, &judge, notes[note_id].click_effect_position);
+											self.render_queue.append(&mut shapes);
+											self.judged_note_id.push(notes[note_id].note_id.to_string());
 											judges.push(judge);
 										},
 										_ => {},
@@ -892,13 +1124,15 @@ impl PlayInfo {
 				for (id, (_, judge_track)) in &mut self.judge_fields {
 					if let Some(notes) = self.notes.get_mut(id) {
 						for note_id in judge_track.current_judge..notes.len() {
-							if notes[note_id].judge_time > time {
+							if notes[note_id].judge_time < time {
 								let judge = Judge::Immaculate(1.0);
 								judge_track.current_judge = judge_track.current_judge + 1;
-								if let Some(shapes) = self.click_effects.get(&notes[note_id].click_effect_id) {
-									let mut shapes = shapes.get_shape(&time, &judge);
-									self.render_queue.append(&mut shapes);
-								}
+								let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+									Some(t) => t.clone(),
+									None => Default::default()
+								}.get_shape(&time, &judge, notes[note_id].click_effect_position);
+								self.render_queue.append(&mut shapes);
+								self.judged_note_id.push(notes[note_id].note_id.to_string());
 								judges.push(judge);
 							}
 						}
@@ -938,7 +1172,7 @@ impl PlayInfo {
 }
 
 impl ClickEffect {
-	fn get_shape(&self, time: &Duration, judge: &Judge) -> Vec<Shape> {
+	fn get_shape(&self, time: &Duration, judge: &Judge, position: Vec2) -> Vec<Shape> {
 		let mut shapes = match judge {
 			Judge::Immaculate(_) => {
 				self.immaculate_effect.clone()
@@ -958,9 +1192,22 @@ impl ClickEffect {
 		};
 		for shape in &mut shapes {
 			shape.start_time = shape.start_time + *time;
-			for (_, animation) in &mut shape.animation {
+			for (id, animation) in &mut shape.animation {
 				animation.start_time = animation.start_time + *time;
+				// stupid
+				if id == &"----Shape----style----position----x".to_string() || id == &"----Shape----style----position----y".to_string() {
+					let delta = if id == &"----Shape----style----position----x".to_string() {
+						position.x
+					}else {
+						position.y
+					};
+					animation.start_value = animation.start_value + delta;
+					for linker in &mut animation.linkers {
+						linker.end_value = linker.end_value + delta;
+					}
+				}
 			}
+			shape.shape.move_delta_to(position);
 		}
 		shapes
 	}

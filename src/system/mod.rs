@@ -8,7 +8,6 @@ pub mod timer;
 pub mod command;
 
 use crate::system::command::CommandError;
-use crate::system::timer::TimerError;
 
 #[derive(thiserror::Error, Debug, Default)]
 /// every types of errors in shapoist
@@ -16,9 +15,6 @@ pub enum Error {
 	/// represent some errors that shouldn't happen
 	#[error("Unknown Error")]
 	#[default] Unknown,
-	/// errors when using [`timer::Timer`]
-	#[error("Timer Error, info: {0}")]
-	TimerError(#[from] TimerError),
 	/// errors when doing io functions
 	#[error("I/O Error, info: {0}")]
 	IoError(#[from] std::io::Error),
@@ -40,6 +36,8 @@ pub enum Error {
 	PlayError(#[from] PlayError),
 	#[error("Chart Edit Error, info: {0}")]
 	ChartEditError(#[from] ChartEditError),
+	#[error("the funtion you call is not available on {0} platform")]
+	PlatformUnsupport(String)
 }
 
 #[non_exhaustive]
@@ -81,5 +79,5 @@ pub enum ChartEditError {
 	#[error("missing info")]
 	MissingInfo,
 	#[error("not in edit mode")]
-	NotInEditMode
+	NotInEditMode,
 }

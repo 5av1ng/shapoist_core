@@ -2,6 +2,8 @@
 //!
 //! Normally you will start from [`ShapoistCore`]
 
+use nablo_shape::prelude::shape_elements::Circle;
+use nablo_shape::prelude::shape_elements::Color;
 use serde::Deserializer;
 use serde::Deserialize;
 use serde::Serializer;
@@ -24,6 +26,12 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use nablo_shape::prelude::shape_elements::Style as NabloStyle;
+
+const IMMACULATE_COLOR: [u8; 4] = [246, 239, 80, 255];
+const EXTRA_COLOR: [u8; 4] = [67, 187, 252, 255];
+const NORMAL_COLOR: [u8; 4] = [21, 223, 112, 255];
+const FADE_COLOR: [u8; 4] = [107, 55, 34, 255];
+const MISS_COLOR: [u8; 4] = [255, 255, 255, 255];
 
 /// The core part of shapoist.
 ///
@@ -96,10 +104,10 @@ pub struct ChartInfo {
 	/// the first [`String`] stands for script name
 	pub chart_varibles: HashMap<String, Vec<Varible>>,
 	pub history: Option<ChartHistory>,
-	/// offcet time
+	/// offset time
 	#[serde(serialize_with = "serialize_duration")]
 	#[serde(deserialize_with = "deserialize_duration")]
-	pub offcet: Duration,
+	pub offset: Duration,
 }
 
 fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error> 
@@ -128,6 +136,7 @@ fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 /// the basic render unit
 pub struct Shape {
 	pub animation: HashMap<String, Animation>,
+	pub linked_note_id: Option<String>,
 	pub shape: NabloShape,
 	#[serde(serialize_with = "serialize_duration")]
 	#[serde(deserialize_with = "deserialize_duration")]
@@ -266,6 +275,7 @@ impl Default for Chart {
 	fn default() -> Self {
 		Self {
 			notes: HashMap::from([(String::from("default"), Note {
+				note_id: "default".into(),
 				judge_type: JudgeType::Slide,
 				judge_time: Duration::seconds(5),
 				judge_field_id: String::from("default"),
@@ -305,6 +315,7 @@ impl Default for Chart {
 				},
 				start_time: Duration::seconds(4),
 				sustain_time: Duration::seconds(6),
+				linked_note_id: None
 			})]),
 			click_effects: HashMap::new(),
 			script_objects: HashMap::new(),
@@ -319,6 +330,7 @@ impl Default for Chart {
 #[serde(default)]
 /// stands for notes
 pub struct Note {
+	pub note_id: String,
 	/// how to judge this note?
 	pub judge_type: JudgeType,
 	/// when should player click this note?
@@ -411,7 +423,7 @@ impl Default for JudgeFieldInner {
 	}
 }
 
-#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(default)]
 /// a click effect, save as delta value.
 pub struct ClickEffect {
@@ -420,6 +432,74 @@ pub struct ClickEffect {
 	pub normal_effect: Vec<Shape>,
 	pub fade_effect: Vec<Shape>,
 	pub miss_effect: Vec<Shape>,
+}
+
+impl Default for ClickEffect {
+	fn default() -> Self {
+		fn get_default_by_color(fill: impl Into<Color>, sustain_time: Duration) -> Vec<Shape> {
+			let radius = 75.0;
+			let linker = AnimationLinker::Bezier(Vec2::new(0.5, 0.0), Vec2::new(0.5, 1.0));
+			vec!(Shape {
+				animation: HashMap::from([(String::from("----Shape----style----fill----color----a"), Animation {
+					start_time: Duration::ZERO,
+					start_value: 255.0,
+					linkers: vec!(Linker {
+						end_value: 0.0,
+						sustain_time,
+						linker: linker.clone(),
+					})
+				}),
+				(String::from("----Shape----style----position----x"), Animation {
+					start_time: Duration::ZERO,
+					start_value: 0.0,
+					linkers: vec!(Linker {
+						end_value: -radius,
+						sustain_time,
+						linker: linker.clone(),
+					})
+				}),
+				(String::from("----Shape----style----position----y"), Animation {
+					start_time: Duration::ZERO,
+					start_value: 0.0,
+					linkers: vec!(Linker {
+						end_value: -radius,
+						sustain_time,
+						linker: linker.clone(),
+					})
+				}),
+				(String::from("----Shape----shape----Circle----radius"), Animation {
+					start_time: Duration::seconds(0),
+					start_value: 0.0,
+					linkers: vec!(Linker {
+						end_value: radius,
+						sustain_time,
+						linker,
+					})
+				})]),
+				shape: NabloShape {
+					shape: ShapeElement::Circle(Circle { radius: 0.0 }),
+					style: NabloStyle {
+						clip: Area::INF,
+						transform_origin: Vec2::same(0.0),
+						fill: fill.into(),
+						..Default::default()
+					}
+				},
+				start_time: Duration::ZERO,
+				sustain_time,
+				linked_note_id: None
+			})
+		}
+
+		let sustain_time = Duration::seconds_f32(0.3);
+		Self {
+			immaculate_effect: get_default_by_color(IMMACULATE_COLOR, sustain_time),
+			extra_effect: get_default_by_color(EXTRA_COLOR, sustain_time),
+			normal_effect: get_default_by_color(NORMAL_COLOR, sustain_time),
+			fade_effect: get_default_by_color(FADE_COLOR, sustain_time),
+			miss_effect: get_default_by_color(MISS_COLOR, sustain_time),
+		}
+	}
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Eq, Hash)]
@@ -447,6 +527,19 @@ pub struct ChartEditor {
 	pub now_select: Option<Select>,
 	/// changes will fist apply to this after now_select
 	pub multi_select: Vec<Select>,
+	/// saves things that have been cloned(saves relative timer refer to current time.), None for havent clone yet.
+	pub clone_buffer: Vec<SelectUnchange>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
+/// what was we select, and for some reason we need them to keep unchanged after selected? [`String refers to id`]
+pub enum SelectUnchange {
+	Note(String, Note),
+	JudgeField(String, JudgeField),
+	Shape(String, Shape),
+	ClickEffect(String, ClickEffect),
+	// TODO
+	Script(String, ()),
 }
 
 /// contains detailed information while playing
@@ -476,9 +569,12 @@ pub struct PlayInfo {
 	pub is_finished: bool,
 	pub sustain_time: Duration,
 	pub current_render: usize,
-	pub offcet: Duration,
+	pub offset: Duration,
 	pub is_track_played: bool,
 	pub track_path: PathBuf,
+	#[cfg(target_arch = "wasm32")]
+	pub sound_data: Vec<u8>,
+	pub(crate) judged_note_id: Vec<String>
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -645,10 +741,10 @@ pub struct Settings {
 	pub thread_handels: usize,
 	/// how many commands should we save as history? by default its 30
 	pub command_history: usize,
-	/// offcet
+	/// offset
 	#[serde(serialize_with = "serialize_duration")]
 	#[serde(deserialize_with = "deserialize_duration")]
-	pub offcet: Duration,
+	pub offset: Duration,
 }
 
 impl Default for Settings {
@@ -661,7 +757,7 @@ impl Default for Settings {
 			need_check_script: true,
 			thread_handels: 4,
 			command_history: 30,
-			offcet: Duration::ZERO,
+			offset: Duration::ZERO,
 		}
 	}
 }
