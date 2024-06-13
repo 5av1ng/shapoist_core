@@ -1,3 +1,5 @@
+use crate::CLICK_SOUND;
+use crate::DELAY_ADJUSTMENT;
 use nablo_shape::prelude::Vec2;
 use std::ops::RangeFrom;
 use nablo_shape::prelude::Area;
@@ -196,7 +198,11 @@ impl ShapoistCore {
 		if self.play_info.is_some() && self.timer.is_started() {
 			trace!("detected is play a chart, updating each shape...");
 			let play_info = self.play_info.as_mut().unwrap();
-			play_info.frame(&self.timer, self.settings.offset, true)?;
+			play_info.frame(&mut self.timer, self.settings.offset, true, if let Some(editor) = &self.chart_editor {
+				editor.show_click_effect
+			}else {
+				true
+			}, &mut self.current_sound, &mut self.is_in_delay_adjustment, &self.settings)?;
 		}
 
 		if let (Some(editor), Some((chart, _))) = (&mut self.chart_editor, &self.current_chart) {
@@ -220,9 +226,29 @@ impl ShapoistCore {
 		Ok(())
 	}
 
+	pub fn update_render_queue(&mut self, will_play_music: bool) -> Result<(), Error> {
+		if let Some(play_info) = &mut self.play_info {
+			play_info.frame(&mut self.timer, self.settings.offset, will_play_music, if let Some(editor) = &self.chart_editor {
+				editor.show_click_effect
+			}else {
+				true
+			}, &mut self.current_sound, &mut self.is_in_delay_adjustment, &self.settings)
+		}else {
+			Err(PlayError::HaventStart.into())
+		}
+	}
+
 	/// clear playing
 	pub fn clear_play(&mut self) {
+		self.timer.pause();
+		self.current_sound = None;
 		self.play_info = None;
+		self.is_in_delay_adjustment = false;
+	}
+
+	/// clear editing
+	pub fn clear_edit(&mut self) {
+		self.chart_editor = None;
 	}
 
 	/// as name says
@@ -278,6 +304,12 @@ impl ShapoistCore {
 			Ok(t) => t,
 			Err(e) => return Err(PlayError::ManagerCreateFail(e).into()),
 		};
+		let click_sound = match StaticSoundData::from_cursor(std::io::Cursor::new(CLICK_SOUND), StaticSoundSettings::default().volume(self.settings.click_sound_volume as f64)) {
+			Ok(t) => t,
+			Err(e) => {
+				return Err(ChartError::MusicSourceCantReadString(e.to_string()).into());
+			}
+		};
 		let play_info = Some(PlayInfo {
 			shapes,
 			judge_fields,
@@ -302,7 +334,9 @@ impl ShapoistCore {
 			track_path: format!("{}/song.mp3",info.path.display()).into(),
 			#[cfg(target_arch = "wasm32")]
 			sound_data: vec!(),
-			judged_note_id: vec!()
+			judged_note_id: vec!(),
+			click_sound,
+			click_sound_handle: None,
 		});
 		self.play_info = play_info;
 		debug!("setting timer...");
@@ -487,9 +521,66 @@ impl ShapoistCore {
 	pub fn judge(&mut self, event: JudgeEvent) -> Result<(), Error> {
 		debug!("judging notes...");
 		if let Some(play_info) = &mut self.play_info {
-			play_info.judge(event, &self.timer)?;
+			play_info.judge(event, &self.timer, if let Some(editor) = &self.chart_editor {
+				editor.show_click_effect
+			}else {
+				true
+			})?;
 		}
 		Ok(())
+	}
+
+	/// as name says
+	pub fn start_delay_adjustment(&mut self) -> Result<(), Error> {
+		info!("starting delay adjustment");
+		self.adjustment.clear();
+		self.is_in_delay_adjustment = true;
+		self.current_chart = Some((Default::default(), ChartInfo {
+			sustain_time: Duration::seconds(16),
+			..Default::default()
+		}));
+		self.play(PlayMode::Auto)?;
+		self.current_sound = match StaticSoundData::from_media_source(std::io::Cursor::new(DELAY_ADJUSTMENT), Default::default()) {
+			Ok(t) => Some(t),
+			Err(e) => {
+				return Err(ChartError::MusicSourceCantReadString(e.to_string()).into());
+			}
+		};
+		Ok(())
+	}
+
+	/// judge something, but in delay adjustment, returns true if adjustment finished
+	pub fn delay_adjustment_judge(&mut self, event: JudgeEvent) -> Result<bool, Error> {
+		debug!("judging notes in delay adjustment...");
+		let current = self.timer.read() - Duration::seconds(3);
+		if current > Duration::seconds(16) {
+			self.is_in_delay_adjustment = false;
+			self.clear_play();
+			return Ok(true);
+		}
+		for click in event.clicks {
+			if let ClickState::Pressed = click.state {
+				for i in 0..16 {
+					if (2 * i - 1) * Duration::milliseconds(500) <= current && current < (2 * i + 1) * Duration::milliseconds(500) {
+						self.adjustment.push(current - i * Duration::milliseconds(1000));
+						return Ok(false)
+					}
+				}
+			}
+		}
+		Ok(false)
+	}
+
+	/// returns offset value and variance.
+	pub fn current_delay(&self) -> (Duration, f32) {
+		if self.adjustment.len() == 0 {
+			return (Duration::ZERO, 0.0)
+		}
+		let average: Duration = self.adjustment.iter().sum::<Duration>() / self.adjustment.len() as f32;
+		let variance = self.adjustment.iter().map(|value| {
+			(value.as_seconds_f32() - average.as_seconds_f32()).powf(2.0)
+		}).sum::<f32>() / self.adjustment.len() as f32;
+		(average, variance)
 	}
 
 	/// create new chart with giving info
@@ -624,6 +715,7 @@ impl ShapoistCore {
 							}
 							loop {
 								if !chart.shapes.contains_key(&format!("{} #{}", id, index)) {
+									t.id = format!("{} #{}", id, index);
 									chart.shapes.insert(format!("{} #{}", id, index), t);
 									break;
 								}
@@ -650,6 +742,7 @@ impl ShapoistCore {
 							t.judge_time = t.judge_time + current;
 							loop {
 								if !chart.notes.contains_key(&format!("{} #{}", id, index)) {
+									t.note_id = format!("{} #{}", id, index);
 									chart.notes.insert(format!("{} #{}", id, index), t);
 									break;
 								}
@@ -841,10 +934,12 @@ impl ScriptInfo {
 
 impl PlayInfo {
 	/// call this function to render a single frame
-	pub fn frame(&mut self, timer: &Timer, offset: Duration, will_play_music: bool) -> Result<(), Error> {
+	pub fn frame(&mut self, timer: &mut Timer, offset: Duration, will_play_music: bool, show_click_effect: bool, sound: &mut Option<StaticSoundData>, is_in_delay_adjustment: &mut bool, settings: &Settings) -> Result<(), Error> {
 		let time = timer.read();
 		if self.is_finished {
 			debug!("play finished");
+			*is_in_delay_adjustment = false;
+			timer.pause();
 			if let Err(e) = self.audio_manager.pause(Tween {
 				duration: std::time::Duration::from_secs(1),
 				..Default::default()
@@ -854,23 +949,35 @@ impl PlayInfo {
 		}
 
 		if !self.is_finished {
-			let play_time = time + self.offset + offset - Duration::seconds(3);
+			let play_time = if *is_in_delay_adjustment {
+				time + self.offset - Duration::seconds(3) 
+			}else { 
+				time + self.offset + offset - Duration::seconds(3) 
+			};
 			if !self.is_track_played && play_time > Duration::ZERO && will_play_music {
 				info!("music playing...");
-				let sound_setting = StaticSoundSettings::new().playback_region(RangeFrom{ start: play_time.as_seconds_f64() });
-				cfg_if::cfg_if! {
-					if #[cfg(target_arch = "wasm32")] {
-						let static_sound = match StaticSoundData::from_media_source(std::io::Cursor::new(self.sound_data.clone()), sound_setting) {
-							Ok(t) => t,
-							Err(e) => return Err(ChartError::from(e).into()),
-						};
-					}else {
-						let static_sound = match StaticSoundData::from_file(&self.track_path, sound_setting) {
-							Ok(t) => t,
-							Err(e) => return Err(ChartError::from(e).into()),
-						};
+				let sound_setting = StaticSoundSettings::new().playback_region(RangeFrom { start: play_time.as_seconds_f64() }).volume(settings.music_volume as f64);
+				let static_sound = if let Some(sound) = sound {
+					sound.clone().with_settings(sound_setting)
+				}else {
+					cfg_if::cfg_if! {
+						if #[cfg(target_arch = "wasm32")] {
+							let out = match StaticSoundData::from_media_source(std::io::Cursor::new(self.sound_data.clone()), sound_setting) {
+								Ok(t) => t,
+								Err(e) => return Err(ChartError::from(e).into()),
+							};
+							*sound = Some(out.clone());
+							out
+						}else {
+							let out = match StaticSoundData::from_file(&self.track_path, sound_setting) {
+								Ok(t) => t,
+								Err(e) => return Err(ChartError::from(e).into()),
+							};
+							*sound = Some(out.clone());
+							out
+						}
 					}
-				}
+				};
 				
 				if let Err(e) = self.audio_manager.play(static_sound) {
 					return Err(PlayError::from(e).into());
@@ -892,11 +999,11 @@ impl PlayInfo {
 				self.click_effects.clear();
 			};
 			for i in self.current_render..self.shapes.len() {
-				if self.shapes[i].start_time < time {
+				if self.shapes[i].start_time <= time {
 					self.render_queue.push(self.shapes[i].clone());
 					self.current_render = i + 1;
 				}else {
-					self.current_render = i;
+					// self.current_render = i;
 					break;
 				}
 			}
@@ -905,9 +1012,15 @@ impl PlayInfo {
 					error!("{}", e);
 				};
 				if let Some(t) = &inner.linked_note_id {
-					((inner.start_time + inner.sustain_time > time) && (inner.start_time < time)) && !self.judged_note_id.contains(&t)
+					let mut is_containing_linked_note = false;
+					for id in t {
+						if self.judged_note_id.contains(&id) {
+							is_containing_linked_note = true
+						}
+					}
+					((inner.start_time + inner.sustain_time >= time) && (inner.start_time <= time)) && !is_containing_linked_note
 				}else {
-					(inner.start_time + inner.sustain_time > time) && (inner.start_time < time)
+					(inner.start_time + inner.sustain_time >= time) && (inner.start_time <= time)
 				}
 			});
 			let mut judge_field_to_delete = vec!();
@@ -925,112 +1038,150 @@ impl PlayInfo {
 			}
 		}
 		if let PlayMode::Auto = self.play_mode {
-			self.judge(JudgeEvent::default(), timer)?;
+			self.judge(JudgeEvent::default(), timer, show_click_effect)?;
 		}
 		Ok(())
 	}
 
-	fn judge(&mut self, event: JudgeEvent, timer: &Timer) -> Result<(), Error> {
+	fn judge(&mut self, event: JudgeEvent, timer: &Timer, show_click_effect: bool) -> Result<(), Error> {
 		let time = timer.read() - Duration::seconds(3);
 		if time < Duration::ZERO {
 			return Ok(())
 		}
 		let mut judges = vec!();
+
+		let click_effect_position = |note: &Note, render_queue: &Vec<Shape>| -> Vec2 {
+			if let Some(id) = &note.linked_shape {
+				let mut output: Option<Vec2> = None;
+				let mut i = 1.0;
+				for id in id {
+					for shape in render_queue {
+						if &shape.id == id {
+							if let Some(inner) = &mut output {
+								*inner = (inner.clone() * i + shape.shape.get_area().center()) / (i + 1.0);
+								i = i + 1.0;
+							}else {
+								output = Some(shape.shape.get_area().center());
+							}
+						}
+					}
+				}
+				if let Some(inner) = output {
+					inner
+				}else {
+					note.click_effect_position
+				}
+			}else {
+				note.click_effect_position
+			}
+		};
+
 		match self.play_mode {
 			PlayMode::Normal => {
 				for (id, (field, judge_track)) in &mut self.judge_fields {
 					if let Some(notes) = self.notes.get_mut(id) {
 						for click in &event.clicks {
 							judge_track.judge_tracks.retain_mut(|inner| {
-								if inner.linked_click != click.id {
-									true
-								}else {
-									let note = &notes[inner.note_id];
-									let mut judge: Option<Judge> = None;
-									match note.judge_type {
-										JudgeType::Flick => {
+								let note = &notes[inner.note_id];
+								let mut judge: Option<Judge> = None;
+								match note.judge_type {
+									JudgeType::Flick => {
+										if inner.linked_click == click.id {
 											if (click.position - inner.last_position).len() > 5.0 {
 												judge = Some(Judge::Immaculate(1.0));
-											}else {
-												judge = Some(Judge::Miss)
 											}
-										},
-										JudgeType::TapAndFlick => {
+											if (time - inner.start_time).abs() > Duration::milliseconds(120) {
+												judge = Some(Judge::Miss);
+											}
+										}
+										
+									},
+									JudgeType::TapAndFlick => {
+										if inner.linked_click == click.id {
 											if (click.position - inner.last_position).len() > 5.0 {
 												judge = Some(Judge::Immaculate(1.0));
-											}else {
-												judge = Some(Judge::Miss)
 											}
-										},
-										JudgeType::Hold(sustain) => {
-											let delta = (inner.start_time - note.judge_time).abs();
-											let percent = ((time - note.judge_time) / sustain) as f32;
-											let judge_check = || -> Judge {
-												if delta < Duration::milliseconds(50) {
-													Judge::Immaculate((delta / Duration::milliseconds(50)) as f32)
-												}else if delta < Duration::milliseconds(70) {
-													Judge::Extra
-												}else if delta < Duration::milliseconds(120) {
-													Judge::Normal
-												}else if delta < Duration::milliseconds(150) {
-													Judge::Fade
+											if (time - inner.start_time).abs() > Duration::milliseconds(120) {
+												judge = Some(Judge::Miss);
+											}
+										}
+									},
+									JudgeType::Hold(sustain) => {
+										let delta = (inner.start_time - note.judge_time).abs();
+										let percent = ((time - note.judge_time) / sustain) as f32;
+										let judge_check = || -> Judge {
+											if delta < Duration::milliseconds(50) {
+												Judge::Immaculate((delta / Duration::milliseconds(50)) as f32)
+											}else if delta < Duration::milliseconds(70) {
+												Judge::Extra
+											}else if delta < Duration::milliseconds(120) {
+												Judge::Normal
+											}else if delta < Duration::milliseconds(150) {
+												Judge::Fade
+											}else {
+												Judge::Miss
+											}
+										};
+										if percent > 1.0 {
+											let mut judge_inner = judge_check();
+											if let Judge::Immaculate(inner) = &mut judge_inner {
+												*inner = *inner * 0.995
+											}
+											judge = Some(judge_inner);
+										}else if percent > 0.0 {
+											if let ClickState::Released = click.state {
+												if percent < 0.8 {
+													judge = Some(Judge::Miss)
 												}else {
-													Judge::Miss
-												}
-											};
-											if percent > 1.0 {
-												let mut judge_inner = judge_check();
-												if let Judge::Immaculate(inner) = &mut judge_inner {
-													*inner = *inner * 0.8
-												}
-												judge = Some(judge_inner);
-											}else if percent > 0.0 {
-												if let ClickState::Released = click.state {
-													if percent < 0.8 {
-														judge = Some(Judge::Miss)
-													}else {
-														let mut judge_inner = judge_check();
-														if let Judge::Immaculate(inner) = &mut judge_inner {
-															*inner = *inner * percent
-														}
-														judge = Some(judge_inner);
+													let mut judge_inner = judge_check();
+													if let Judge::Immaculate(inner) = &mut judge_inner {
+														*inner = *inner * percent
 													}
+													judge = Some(judge_inner);
 												}
 											}
-										},
-										JudgeType::AngledFilck(angle) => {
-											let delta = click.position - inner.last_position;
-											let radio = (delta.angle() - angle).abs() / (std::f32::consts::PI / 12.0);
+										}
+									},
+									JudgeType::AngledFilck(angle) => {
+										let delta = click.position - inner.last_position;
+										let radio = (delta.angle() - angle).abs() / (std::f32::consts::PI / 12.0);
+										if inner.linked_click == click.id {
 											if delta.len() > 5.0 && radio < 1.0 {
 												judge = Some(Judge::Immaculate(1.0 * radio));
-											}else {
+											}
+											if (time - inner.start_time).abs() > Duration::milliseconds(120) {
 												judge = Some(Judge::Miss);
 											}
 										}
-										JudgeType::AngledTapFilck(angle) => {
-											let delta = click.position - inner.last_position;
-											let radio = (delta.angle() - angle).abs() / (std::f32::consts::PI / 12.0);
-											if delta.len() > 5.0 && radio < 1.0 {
-												judge = Some(Judge::Immaculate(1.0 * radio));
-											}else {
-												judge = Some(Judge::Miss);
-											}
-										}
-										JudgeType::Chain(_) => todo!(),
-										JudgeType::TapChain(_) => todo!(),
-										_ => {},
 									}
-									if let Some(judge_inner) = &judge {
+									JudgeType::AngledTapFilck(angle) => {
+										let delta = click.position - inner.last_position;
+										let radio = (delta.angle() - angle).abs() / (std::f32::consts::PI / 12.0);
+										if inner.linked_click == click.id {
+											if delta.len() > 5.0 && radio < 1.0 {
+												judge = Some(Judge::Immaculate(1.0 * radio));
+											}
+											if (time - inner.start_time).abs() > Duration::milliseconds(120) {
+												judge = Some(Judge::Miss);
+											}
+										}
+									}
+									JudgeType::Chain(_) => todo!(),
+									JudgeType::TapChain(_) => todo!(),
+									_ => {},
+								}
+								if let Some(judge_inner) = &judge {
+									if show_click_effect {
 										let mut shapes = match self.click_effects.get(&note.click_effect_id) {
 											Some(t) => t.clone(),
 											None => Default::default()
-										}.get_shape(&time, &judge_inner, note.click_effect_position);
+										}.get_shape(&time, &judge_inner, click_effect_position(&note, &self.render_queue), &note.note_id);
 										self.render_queue.append(&mut shapes);
-										judges.push(judge_inner.clone());
-										self.judged_note_id.push(id.to_string());
 									}
-									judge.is_none()
+									judges.push(judge_inner.clone());
+									self.judged_note_id.push(notes[inner.note_id].note_id.clone());
 								}
+								judge.is_none()
 							});
 						}
 						for note_id in judge_track.current_judge..notes.len() {
@@ -1041,11 +1192,13 @@ impl PlayInfo {
 							if delta > Duration::milliseconds(150) {
 								judges.push(Judge::Miss);
 								self.judged_note_id.push(notes[note_id].note_id.to_string());
-								let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
-									Some(t) => t.clone(),
-									None => Default::default()
-								}.get_shape(&time, &Judge::Miss, notes[note_id].click_effect_position);
-								self.render_queue.append(&mut shapes);
+								if show_click_effect {
+									let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+										Some(t) => t.clone(),
+										None => Default::default()
+									}.get_shape(&time, &Judge::Miss, click_effect_position(&notes[note_id], &self.render_queue), &notes[note_id].note_id);
+									self.render_queue.append(&mut shapes);
+								}
 								judge_track.current_judge = judge_track.current_judge + 1;
 								continue;
 							}
@@ -1092,11 +1245,13 @@ impl PlayInfo {
 											}
 
 											judge_track.current_judge = judge_track.current_judge + 1;
-											let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
-												Some(t) => t.clone(),
-												None => Default::default()
-											}.get_shape(&time, &judge, notes[note_id].click_effect_position);
-											self.render_queue.append(&mut shapes);
+											if show_click_effect {
+												let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+													Some(t) => t.clone(),
+													None => Default::default()
+												}.get_shape(&time, &judge, click_effect_position(&notes[note_id], &self.render_queue), &notes[note_id].note_id);
+												self.render_queue.append(&mut shapes);
+											}
 											self.judged_note_id.push(notes[note_id].note_id.to_string());
 											judges.push(judge);
 										},
@@ -1104,11 +1259,13 @@ impl PlayInfo {
 											let judge = Judge::Immaculate(1.0);
 
 											judge_track.current_judge = judge_track.current_judge + 1;
-											let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
-												Some(t) => t.clone(),
-												None => Default::default()
-											}.get_shape(&time, &judge, notes[note_id].click_effect_position);
-											self.render_queue.append(&mut shapes);
+											if show_click_effect {
+												let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+													Some(t) => t.clone(),
+													None => Default::default()
+												}.get_shape(&time, &judge, click_effect_position(&notes[note_id], &self.render_queue), &notes[note_id].note_id);
+												self.render_queue.append(&mut shapes);
+											}
 											self.judged_note_id.push(notes[note_id].note_id.to_string());
 											judges.push(judge);
 										},
@@ -1127,11 +1284,13 @@ impl PlayInfo {
 							if notes[note_id].judge_time < time {
 								let judge = Judge::Immaculate(1.0);
 								judge_track.current_judge = judge_track.current_judge + 1;
-								let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
-									Some(t) => t.clone(),
-									None => Default::default()
-								}.get_shape(&time, &judge, notes[note_id].click_effect_position);
-								self.render_queue.append(&mut shapes);
+								if show_click_effect {
+									let mut shapes = match self.click_effects.get(&notes[note_id].click_effect_id) {
+										Some(t) => t.clone(),
+										None => Default::default()
+									}.get_shape(&time, &judge, click_effect_position(&notes[note_id], &self.render_queue), &notes[note_id].note_id);
+									self.render_queue.append(&mut shapes);
+								}
 								self.judged_note_id.push(notes[note_id].note_id.to_string());
 								judges.push(judge);
 							}
@@ -1142,8 +1301,27 @@ impl PlayInfo {
 			PlayMode::Replay(_) => todo!()
 		}
 		for judge in judges {
+			self.play_click_sound()?;
 			self.caculate(judge);
 		}
+		Ok(())
+	}
+
+	#[inline]
+	fn play_click_sound(&mut self) -> Result<(), Error> {
+		// if let Some(handle) = &mut self.click_sound_handle {
+		// 	if let Err(e) = handle.seek_to(0.0) {
+		// 		return Err(PlayError::MusicPlayFailed(kira::manager::error::PlaySoundError::CommandError(e)).into());
+		// 	};
+		// 	if let Err(e) = handle.resume(Default::default()) {
+		// 		return Err(PlayError::MusicPlayFailed(kira::manager::error::PlaySoundError::CommandError(e)).into());
+		// 	}
+		// }else {
+		// 	self.click_sound_handle = match self.audio_manager.play(self.click_sound.clone()) {
+		// 		Ok(handle) => Some(handle),
+		// 		Err(e) => return Err(PlayError::MusicPlayFailed(e).into()),
+		// 	}
+		// }
 		Ok(())
 	}
 
@@ -1172,7 +1350,8 @@ impl PlayInfo {
 }
 
 impl ClickEffect {
-	fn get_shape(&self, time: &Duration, judge: &Judge, position: Vec2) -> Vec<Shape> {
+	fn get_shape(&self, time: &Duration, judge: &Judge, position: Vec2, note_id: impl Into<String>) -> Vec<Shape> {
+		let note_id = note_id.into();
 		let mut shapes = match judge {
 			Judge::Immaculate(_) => {
 				self.immaculate_effect.clone()
@@ -1192,6 +1371,7 @@ impl ClickEffect {
 		};
 		for shape in &mut shapes {
 			shape.start_time = shape.start_time + *time;
+			shape.id = note_id.clone();
 			for (id, animation) in &mut shape.animation {
 				animation.start_time = animation.start_time + *time;
 				// stupid
@@ -1338,6 +1518,9 @@ impl Default for ShapoistCore {
 			command_history: Vec::new(),
 			settings: Settings::default(),
 			thread_pool: Vec::new(),
+			current_sound: None,
+			adjustment: vec!(),
+			is_in_delay_adjustment: false,
 		}
 	}
 }

@@ -2,6 +2,8 @@
 //!
 //! Normally you will start from [`ShapoistCore`]
 
+use kira::sound::static_sound::StaticSoundHandle;
+use kira::sound::static_sound::StaticSoundData;
 use nablo_shape::prelude::shape_elements::Circle;
 use nablo_shape::prelude::shape_elements::Color;
 use serde::Deserializer;
@@ -63,7 +65,11 @@ pub struct ShapoistCore {
 	pub command_history: Vec<Command>,
 	/// settings of shapoist
 	pub settings: Settings,
-	pub(crate) thread_pool: Vec<JoinHandle<Result<(), ClientError>>>
+	/// check wheather we are in delay adjustment
+	pub is_in_delay_adjustment: bool,
+	pub(crate) thread_pool: Vec<JoinHandle<Result<(), ClientError>>>,
+	pub(crate) current_sound: Option<StaticSoundData>, 
+	pub(crate) adjustment: Vec<Duration>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -135,8 +141,9 @@ fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 #[serde(default)]
 /// the basic render unit
 pub struct Shape {
+	pub id: String,
 	pub animation: HashMap<String, Animation>,
-	pub linked_note_id: Option<String>,
+	pub linked_note_id: Option<Vec<String>>,
 	pub shape: NabloShape,
 	#[serde(serialize_with = "serialize_duration")]
 	#[serde(deserialize_with = "deserialize_duration")]
@@ -281,6 +288,7 @@ impl Default for Chart {
 				judge_field_id: String::from("default"),
 				click_effect_id: String::from("default"),
 				click_effect_position: Vec2::ZERO,
+				linked_shape: None,
 			})]),
 			judge_fields: HashMap::from([(String::from("default"), JudgeField {
 				inner: JudgeFieldInner {
@@ -293,6 +301,7 @@ impl Default for Chart {
 				sustain_time: Duration::seconds(10),
 			})]),
 			shapes: HashMap::from([(String::from("default"), Shape {
+				id: "default".into(),
 				animation: HashMap::from([(String::from("----Shape----style----position----y"), Animation {
 					start_time: Duration::seconds(4),
 					start_value: -100.0,
@@ -343,6 +352,8 @@ pub struct Note {
 	pub click_effect_id: String,
 	/// where should we display click effect?
 	pub click_effect_position: Vec2,
+	/// linked shapes, if this is setted, then the click effect will display at center of current shapes, saves as id.
+	pub linked_shape: Option<Vec<String>>
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -440,6 +451,7 @@ impl Default for ClickEffect {
 			let radius = 75.0;
 			let linker = AnimationLinker::Bezier(Vec2::new(0.5, 0.0), Vec2::new(0.5, 1.0));
 			vec!(Shape {
+				id: "".into(),
 				animation: HashMap::from([(String::from("----Shape----style----fill----color----a"), Animation {
 					start_time: Duration::ZERO,
 					start_value: 255.0,
@@ -529,6 +541,8 @@ pub struct ChartEditor {
 	pub multi_select: Vec<Select>,
 	/// saves things that have been cloned(saves relative timer refer to current time.), None for havent clone yet.
 	pub clone_buffer: Vec<SelectUnchange>,
+	/// will we show click effects?
+	pub show_click_effect: bool,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq)]
@@ -574,7 +588,9 @@ pub struct PlayInfo {
 	pub track_path: PathBuf,
 	#[cfg(target_arch = "wasm32")]
 	pub sound_data: Vec<u8>,
-	pub(crate) judged_note_id: Vec<String>
+	pub(crate) judged_note_id: Vec<String>,
+	pub click_sound: StaticSoundData,
+	pub click_sound_handle: Option<StaticSoundHandle>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
@@ -741,6 +757,10 @@ pub struct Settings {
 	pub thread_handels: usize,
 	/// how many commands should we save as history? by default its 30
 	pub command_history: usize,
+	/// normalized
+	pub music_volume: f32,
+	/// normalized
+	pub click_sound_volume: f32,
 	/// offset
 	#[serde(serialize_with = "serialize_duration")]
 	#[serde(deserialize_with = "deserialize_duration")]
@@ -757,6 +777,8 @@ impl Default for Settings {
 			need_check_script: true,
 			thread_handels: 4,
 			command_history: 30,
+			music_volume: 0.8,
+			click_sound_volume: 0.7,
 			offset: Duration::ZERO,
 		}
 	}

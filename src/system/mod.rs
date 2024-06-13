@@ -50,8 +50,10 @@ pub enum ChartError {
 	UnsupportedEncoding,
 	#[error("Cant parse Chart")]
 	CantParseChart,
-	#[error("Cant read music source")]
-	MusicSourceCantRead(#[from] kira::sound::FromFileError)
+	#[error("Cant read music source, info: {0}")]
+	MusicSourceCantRead(#[from] kira::sound::FromFileError),
+	#[error("Cant read music source, info: {0}")]
+	MusicSourceCantReadString(String)
 }
 
 #[non_exhaustive]
