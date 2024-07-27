@@ -276,6 +276,24 @@ pub struct Chart {
 	pub group: Vec<HashSet<Select>>,
 	/// how large will the chart take.
 	pub size: Vec2,
+	/// event when playing.
+	pub events: Vec<ChartEvent>,
+	/// id and wgsl code
+	pub shaders: HashMap<String, String>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
+#[serde(default)]
+pub struct ChartEvent {
+	pub inner: ChartEventInner,
+	pub time: Duration,
+}
+
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]
+pub enum ChartEventInner {
+	#[default] None,
+	ChangeShader(Option<String>),
+	Custom(String),
 }
 
 impl Default for Chart {
@@ -331,6 +349,8 @@ impl Default for Chart {
 			group: vec!(),
 			// sustain_time: Duration::seconds(10),
 			size: Vec2::new(1920.0,1080.0),
+			events: vec!(),
+			shaders: HashMap::new(),
 		}
 	}
 }
@@ -591,6 +611,12 @@ pub struct PlayInfo {
 	pub(crate) judged_note_id: Vec<String>,
 	pub click_sound: StaticSoundData,
 	pub click_sound_handle: Option<StaticSoundHandle>,
+	/// sort by time
+	pub events: Vec<ChartEvent>,
+	pub current_event: usize,
+	/// none for default, contains shader code
+	pub current_shader: Option<String>,
+	pub shaders: HashMap<String, String>,
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone, Debug, PartialEq, Default)]

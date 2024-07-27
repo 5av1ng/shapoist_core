@@ -67,8 +67,8 @@ impl Timer {
 	/// set the timer, positive duration means earlier, read should be larger
 	pub fn set(&mut self, offset: Duration) {
 		if self.is_started() {
-			self.pause_time = self.pause_time - offset;
-			self.start_time = self.start_time - offset;
+			self.pause_time -= offset;
+			self.start_time -= offset;
 		}else {
 			self.pause_time = self.start_time + offset;
 		}

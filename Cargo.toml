@@ -10,7 +10,7 @@ cfg-if = "1.0.0"
 env_logger = "0.10.0"
 log = "0.4"
 serde = { version = "1.0.196", features = ["derive"] }
-toml = { version = "0.8.8", features = ["parse", "display"] }
+toml = { version = "0.8.16", features = ["parse", "display"] }
 kira = "0.8.4"
 rand = "0.8.5"
 utf8_slice = "1.0.0"
